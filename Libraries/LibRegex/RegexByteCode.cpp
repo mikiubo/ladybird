@@ -5,6 +5,7 @@
  */
 
 #include "RegexByteCode.h"
+#include "AK/Variant.h"
 #include "RegexDebug.h"
 #include <AK/BinarySearch.h>
 #include <AK/CharacterTypes.h>
@@ -210,6 +211,53 @@ ALWAYS_INLINE ExecutionResult OpCode_GoBack::execute(MatchInput const& input, Ma
         return ExecutionResult::Failed_ExecuteLowPrioForks;
 
     reverse_string_position(state, input.view, count());
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_SetStepBack::execute(MatchInput const&, MatchState& state) const
+{
+    if (step() > state.string_position)
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    state.stepBacks.append(step());
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_IncStepBack::execute(MatchInput const& input, MatchState& state) const
+{
+    if (state.stepBacks.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    state.stepBacks.last()++;
+
+    if (state.stepBacks.last() > state.string_position)
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    reverse_string_position(state, input.view, state.stepBacks.last());
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_CheckStepBack::execute(MatchInput const& input, MatchState& state) const
+{
+    if (state.stepBacks.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    if (input.saved_positions.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    if (state.stepBacks.last() > input.saved_positions.last())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    // if (state.string_position < input.saved_positions.last()-2  )
+    //      return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    state.string_position = input.saved_positions.last();
+    state.string_position_in_code_units = input.saved_code_unit_positions.last();
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_CheckSavedPosition::execute(MatchInput const& input, MatchState& state) const
+{
+    if (state.string_position != input.saved_positions.last())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    state.stepBacks.take_last();
     return ExecutionResult::Continue;
 }
 

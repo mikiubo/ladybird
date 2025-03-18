@@ -745,6 +745,9 @@ TEST_CASE(ECMA262_match)
         { "(?!(b))\\1"sv, "a"sv, false },
         // String table merge bug: inverse map should be merged regardless of available direct mappings.
         { "((?<x>a)|(?<x>b))"sv, "aa"sv, false },
+        // Variable lenght lookbehind
+        { "(?<=(ab|abc))d"sv, "abcd"sv, true, (ECMAScriptFlags)regex::AllFlags::Global },
+        { "(?<=a.*)b"sv, "a b"sv, true, (ECMAScriptFlags)regex::AllFlags::Global },
     };
 
     for (auto& test : tests) {
