@@ -741,6 +741,8 @@ TEST_CASE(ECMA262_match)
         // Tests nested lookahead with alternation - verifies proper save/restore stack cleanup
         { "a(?=.(?=c)|b)b"sv, "ab"sv, true },
         { "(?=)(?=\\d)"sv, "smart"sv, false },
+        { "(?<=(ab|abc))d"sv, "abcd"sv, true, (ECMAScriptFlags)regex::AllFlags::Global },
+        { "(?<=a.*)b"sv, "a b"sv, true, (ECMAScriptFlags)regex::AllFlags::Global },
     };
 
     for (auto& test : tests) {
