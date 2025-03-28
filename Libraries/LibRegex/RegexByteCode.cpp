@@ -255,6 +255,9 @@ ALWAYS_INLINE ExecutionResult OpCode_CheckStepBack::execute(MatchInput const& in
 
 ALWAYS_INLINE ExecutionResult OpCode_CheckSavedPosition::execute(MatchInput const& input, MatchState& state) const
 {
+    if (input.saved_positions.size() == 0) {
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    }
     if (state.string_position != input.saved_positions.last())
         return ExecutionResult::Failed_ExecuteLowPrioForks;
     state.stepBacks.take_last();

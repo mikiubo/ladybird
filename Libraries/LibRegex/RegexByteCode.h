@@ -398,7 +398,7 @@ public:
             auto body_length = lookaround_body.size();
             empend((ByteCodeValueType)OpCodeId::Save);
             empend((ByteCodeValueType)OpCodeId::SetStepBack);
-            empend((ByteCodeValueType)match_length - 1);
+            empend((ByteCodeValueType)match_length > 0 ? match_length - 1 : match_length);
             empend((ByteCodeValueType)OpCodeId::IncStepBack);
             empend((ByteCodeValueType)OpCodeId::ForkJump);
             empend((ByteCodeValueType)1 + 2); // JUMP to label _BODY
