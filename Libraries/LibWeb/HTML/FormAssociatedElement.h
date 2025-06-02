@@ -173,6 +173,13 @@ class FormAssociatedTextControlElement
     : public FormAssociatedElement
     , public InputEventsTarget {
 public:
+    struct PositionInLine {
+        int previous_newline_index = 0;
+        int column_code_point = 0;
+    };
+
+    PositionInLine find_cursor_position_in_line(size_t offset);
+
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-textarea/input-relevant-value
     virtual String relevant_value() = 0;
     virtual WebIDL::ExceptionOr<void> set_relevant_value(String const&) = 0;
