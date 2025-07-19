@@ -30,8 +30,13 @@ void WorkerAgentParent::initialize(JS::Realm& realm)
     m_message_port = MessagePort::create(realm);
     m_message_port->entangle_with(*m_outside_port);
 
-    TransferDataHolder data_holder;
+    TransferDataEncoder data_holder;
     MUST(m_message_port->transfer_steps(data_holder));
+
+    // FIXME: Specification says this supposed to happen in step 11 of onComplete handler defined in https://html.spec.whatwg.org/multipage/workers.html#run-a-worker
+    //        but that would require introducing a new IPC message type to communicate this from WebWorker to WebContent process,
+    //        so let's do it here for now.
+    m_outside_port->start();
 
     // NOTE: This blocking IPC call may launch another process.
     //    If spinning the event loop for this can cause other javascript to execute, we're in trouble.

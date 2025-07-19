@@ -53,6 +53,7 @@
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/Storage.h>
+#include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
@@ -66,6 +67,7 @@
 #include <LibWeb/RequestIdleCallback/IdleDeadline.h>
 #include <LibWeb/Selection/Selection.h>
 #include <LibWeb/StorageAPI/StorageBottle.h>
+#include <LibWeb/StorageAPI/StorageEndpoint.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::HTML {
@@ -464,14 +466,18 @@ WebIDL::ExceptionOr<GC::Ref<Storage>> Window::local_storage()
         return GC::Ref { *storage };
 
     // 2. Let map be the result of running obtain a local storage bottle map with this's relevant settings object and "localStorage".
-    auto map = StorageAPI::obtain_a_local_storage_bottle_map(relevant_settings_object(*this), "localStorage"sv);
+    GC::Ptr<StorageAPI::LocalStorageBottle> map;
+    auto storage_key = StorageAPI::obtain_a_storage_key(relevant_settings_object(*this));
+    if (storage_key.has_value()) {
+        map = StorageAPI::LocalStorageBottle::create(heap(), page(), storage_key.value(), StorageAPI::StorageEndpoint::LOCAL_STORAGE_QUOTA);
+    }
 
     // 3. If map is failure, then throw a "SecurityError" DOMException.
     if (!map)
         return WebIDL::SecurityError::create(realm, "localStorage is not available"_string);
 
     // 4. Let storage be a new Storage object whose map is map.
-    auto storage = Storage::create(realm, Storage::Type::Session, map.release_nonnull());
+    auto storage = Storage::create(realm, Storage::Type::Session, *map);
 
     // 5. Set this's associated Document's local storage holder to storage.
     associated_document.set_local_storage_holder(storage);
@@ -491,14 +497,14 @@ WebIDL::ExceptionOr<GC::Ref<Storage>> Window::session_storage()
         return GC::Ref { *storage };
 
     // 2. Let map be the result of running obtain a session storage bottle map with this's relevant settings object and "sessionStorage".
-    auto map = StorageAPI::obtain_a_session_storage_bottle_map(relevant_settings_object(*this), "sessionStorage"sv);
+    auto map = StorageAPI::obtain_a_session_storage_bottle_map(relevant_settings_object(*this), StorageAPI::StorageEndpointType::SessionStorage);
 
     // 3. If map is failure, then throw a "SecurityError" DOMException.
     if (!map)
         return WebIDL::SecurityError::create(realm, "sessionStorage is not available"_string);
 
     // 4. Let storage be a new Storage object whose map is map.
-    auto storage = Storage::create(realm, Storage::Type::Session, map.release_nonnull());
+    auto storage = Storage::create(realm, Storage::Type::Session, *map);
 
     // 5. Set this's associated Document's session storage holder to storage.
     associated_document.set_session_storage_holder(storage);
@@ -1267,13 +1273,13 @@ Variant<GC::Root<DOM::Event>, Empty> Window::event() const
     return Empty {};
 }
 
-// https://w3c.github.io/csswg-drafts/cssom/#dom-window-getcomputedstyle
-GC::Ref<CSS::CSSStyleDeclaration> Window::get_computed_style(DOM::Element& element, Optional<String> const& pseudo_element) const
+// https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
+GC::Ref<CSS::CSSStyleProperties> Window::get_computed_style(DOM::Element& element, Optional<String> const& pseudo_element) const
 {
     // 1. Let doc be elt’s node document.
 
     // 2. Let obj be elt.
-    DOM::ElementReference object { element };
+    Optional<DOM::AbstractElement> object { element };
 
     // 3. If pseudoElt is provided, is not the empty string, and starts with a colon, then:
     if (pseudo_element.has_value() && pseudo_element.value().starts_with(':')) {
@@ -1281,8 +1287,9 @@ GC::Ref<CSS::CSSStyleDeclaration> Window::get_computed_style(DOM::Element& eleme
         auto type = parse_pseudo_element_selector(CSS::Parser::ParsingParams(associated_document()), pseudo_element.value());
 
         // 2. If type is failure, or is a ::slotted() or ::part() pseudo-element, let obj be null.
-        // FIXME: We can't pass a null element to CSSStyleProperties::create_resolved_style()
-        if (!type.has_value()) {
+        // FIXME: Handle ::part() here too when we support it.
+        if (!type.has_value() || type.value().type() == CSS::PseudoElement::Slotted) {
+            object = {};
         }
         // 3. Otherwise let obj be the given pseudo-element of elt.
         else {
@@ -1311,7 +1318,7 @@ GC::Ref<CSS::CSSStyleDeclaration> Window::get_computed_style(DOM::Element& eleme
     //        Null.
     //    owner node
     //        obj.
-    return CSS::CSSStyleProperties::create_resolved_style(move(object));
+    return CSS::CSSStyleProperties::create_resolved_style(element.realm(), move(object));
 }
 
 // https://w3c.github.io/csswg-drafts/cssom-view/#dom-window-matchmedia

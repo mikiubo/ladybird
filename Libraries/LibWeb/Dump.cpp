@@ -48,10 +48,10 @@
 #include <LibWeb/Layout/SVGBox.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/Viewport.h>
+#include <LibWeb/Namespace.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/TextPaintable.h>
 #include <LibWeb/SVG/SVGDecodedImageData.h>
-#include <stdio.h>
 
 namespace Web {
 
@@ -94,52 +94,57 @@ void dump_tree(StringBuilder& builder, DOM::Node const& node)
     static int indent = 0;
     for (int i = 0; i < indent; ++i)
         builder.append("  "sv);
-    if (is<DOM::Element>(node)) {
-        builder.appendff("<{}", as<DOM::Element>(node).local_name());
-        as<DOM::Element>(node).for_each_attribute([&](auto& name, auto& value) {
+    if (auto const* element = as_if<DOM::Element>(node)) {
+        auto namespace_prefix = [&] -> FlyString {
+            auto const& namespace_uri = element->namespace_uri();
+            if (!namespace_uri.has_value() || node.document().is_default_namespace(namespace_uri.value().to_string()))
+                return ""_fly_string;
+            if (namespace_uri == Namespace::HTML)
+                return "html:"_fly_string;
+            if (namespace_uri == Namespace::SVG)
+                return "svg:"_fly_string;
+            if (namespace_uri == Namespace::MathML)
+                return "mathml:"_fly_string;
+            return *namespace_uri;
+        }();
+
+        builder.appendff("<{}{}", namespace_prefix, element->local_name());
+        element->for_each_attribute([&](auto& name, auto& value) {
             builder.appendff(" {}={}", name, value);
         });
         builder.append(">\n"sv);
-        auto& element = as<DOM::Element>(node);
-        if (element.use_pseudo_element().has_value()) {
+        if (element->use_pseudo_element().has_value()) {
             for (int i = 0; i < indent; ++i)
                 builder.append("  "sv);
-            builder.appendff("  (pseudo-element: {})\n", CSS::pseudo_element_name(element.use_pseudo_element().value()));
+            builder.appendff("  (pseudo-element: {})\n", CSS::pseudo_element_name(element->use_pseudo_element().value()));
         }
-    } else if (is<DOM::Text>(node)) {
-        builder.appendff("\"{}\"\n", as<DOM::Text>(node).data());
+    } else if (auto const* text = as_if<DOM::Text>(node)) {
+        builder.appendff("\"{}\"\n", text->data());
     } else {
         builder.appendff("{}\n", node.node_name());
     }
     ++indent;
-    if (is<DOM::Element>(node)) {
-        if (auto shadow_root = static_cast<DOM::Element const&>(node).shadow_root()) {
-            dump_tree(builder, *shadow_root);
+    if (auto const* element = as_if<DOM::Element>(node); element && element->shadow_root())
+        dump_tree(builder, *element->shadow_root());
+    if (auto const* image = as_if<HTML::HTMLImageElement>(node)) {
+        if (auto const* svg_data = as_if<SVG::SVGDecodedImageData>(image->current_request().image_data().ptr())) {
+            ++indent;
+            for (int i = 0; i < indent; ++i)
+                builder.append("  "sv);
+            builder.append("(SVG-as-image isolated context)\n"sv);
+            dump_tree(builder, svg_data->svg_document());
+            --indent;
         }
     }
-    if (is<HTML::HTMLImageElement>(node)) {
-        if (auto image_data = static_cast<HTML::HTMLImageElement const&>(node).current_request().image_data()) {
-            if (is<SVG::SVGDecodedImageData>(*image_data)) {
-                ++indent;
-                for (int i = 0; i < indent; ++i)
-                    builder.append("  "sv);
-                builder.append("(SVG-as-image isolated context)\n"sv);
-                auto& svg_data = as<SVG::SVGDecodedImageData>(*image_data);
-                dump_tree(builder, svg_data.svg_document());
-                --indent;
-            }
-        }
-    }
-    if (is<HTML::HTMLTemplateElement>(node)) {
-        auto& template_element = as<HTML::HTMLTemplateElement>(node);
+    if (auto const* template_element = as_if<HTML::HTMLTemplateElement>(node)) {
         for (int i = 0; i < indent; ++i)
             builder.append("  "sv);
         builder.append("(template content)\n"sv);
-        dump_tree(builder, template_element.content());
+        dump_tree(builder, template_element->content());
         builder.append("(template normal subtree)\n"sv);
     }
-    if (is<DOM::ParentNode>(node)) {
-        static_cast<DOM::ParentNode const&>(node).for_each_child([&](auto& child) {
+    if (auto const* parent_node = as_if<DOM::ParentNode>(node)) {
+        parent_node->for_each_child([&](auto const& child) {
             dump_tree(builder, child);
             return IterationDecision::Continue;
         });
@@ -386,15 +391,15 @@ void dump_tree(StringBuilder& builder, Layout::Node const& layout_node, bool sho
             color_off,
             fragment.layout_node().class_name());
         builder.appendff("start: {}, length: {}, rect: {} baseline: {}\n",
-            fragment.start(),
-            fragment.length(),
+            fragment.start_byte_offset(),
+            fragment.length_in_bytes(),
             fragment.absolute_rect(),
             fragment.baseline());
         if (is<Layout::TextNode>(fragment.layout_node())) {
             for (size_t i = 0; i < indent; ++i)
                 builder.append("  "sv);
             auto const& layout_text = static_cast<Layout::TextNode const&>(fragment.layout_node());
-            auto fragment_text = MUST(layout_text.text_for_rendering().substring_from_byte_offset(fragment.start(), fragment.length()));
+            auto fragment_text = MUST(layout_text.text_for_rendering().substring_from_byte_offset(fragment.start_byte_offset(), fragment.length_in_bytes()));
             builder.appendff("      \"{}\"\n", fragment_text);
         }
     };
@@ -600,6 +605,7 @@ void dump_selector(StringBuilder& builder, CSS::Selector const& selector, int in
 
                 switch (pseudo_element_metadata.parameter_type) {
                 case CSS::PseudoElementMetadata::ParameterType::None:
+                case CSS::PseudoElementMetadata::ParameterType::CompoundSelector:
                     break;
                 case CSS::PseudoElementMetadata::ParameterType::PTNameSelector: {
                     auto const& [is_universal, value] = pseudo_element.pt_name_selector();
@@ -919,17 +925,14 @@ void dump_tree(StringBuilder& builder, Painting::Paintable const& paintable, boo
 
     builder.appendff("{}{} ({})", paintable.class_name(), color_off, paintable.layout_node().debug_description());
 
-    if (paintable.layout_node().is_box()) {
-        auto const& paintable_box = static_cast<Painting::PaintableBox const&>(paintable);
-        builder.appendff(" {}", paintable_box.absolute_border_box_rect());
+    if (auto const* paintable_box = as_if<Painting::PaintableBox>(paintable)) {
+        builder.appendff(" {}", paintable_box->absolute_border_box_rect());
 
-        if (paintable_box.has_scrollable_overflow()) {
-            builder.appendff(" overflow: {}", paintable_box.scrollable_overflow_rect());
-        }
+        if (paintable_box->has_scrollable_overflow())
+            builder.appendff(" overflow: {}", paintable_box->scrollable_overflow_rect());
 
-        if (!paintable_box.scroll_offset().is_zero()) {
-            builder.appendff(" scroll-offset: {}", paintable_box.scroll_offset());
-        }
+        if (!paintable_box->scroll_offset().is_zero())
+            builder.appendff(" scroll-offset: {}", paintable_box->scroll_offset());
     }
     builder.append("\n"sv);
     for (auto const* child = paintable.first_child(); child; child = child->next_sibling()) {

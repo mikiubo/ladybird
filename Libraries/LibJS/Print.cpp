@@ -774,11 +774,9 @@ ErrorOr<void> print_intl_segmenter(JS::PrintContext& print_context, JS::Intl::Se
 
 ErrorOr<void> print_intl_segments(JS::PrintContext& print_context, JS::Intl::Segments const& segments, HashTable<JS::Object*>& seen_objects)
 {
-    auto segments_string = JS::Utf16String::create(segments.segments_string());
-
     TRY(print_type(print_context, "Segments"sv));
     TRY(js_out(print_context, "\n  string: "));
-    TRY(print_value(print_context, JS::PrimitiveString::create(segments.vm(), move(segments_string)), seen_objects));
+    TRY(print_value(print_context, JS::PrimitiveString::create(segments.vm(), segments.segments_string()), seen_objects));
     return {};
 }
 
@@ -1038,18 +1036,18 @@ ErrorOr<void> print_value(JS::PrintContext& print_context, JS::Value value, Hash
     else if (value.is_undefined())
         TRY(js_out(print_context, "\033[34;1m"));
 
-    if (value.is_string() && !print_context.disable_string_quotes)
+    if (value.is_string() && !print_context.raw_strings)
         TRY(js_out(print_context, "\""));
     else if (value.is_negative_zero())
         TRY(js_out(print_context, "-"));
 
     auto contents = value.to_string_without_side_effects();
-    if (value.is_string() && !print_context.disable_string_quotes)
+    if (value.is_string() && !print_context.raw_strings)
         TRY(js_out(print_context, "{}", TRY(escape_for_string_literal(contents))));
     else
         TRY(js_out(print_context, "{}", contents));
 
-    if (value.is_string() && !print_context.disable_string_quotes)
+    if (value.is_string() && !print_context.raw_strings)
         TRY(js_out(print_context, "\""));
     TRY(js_out(print_context, "\033[0m"));
     return {};

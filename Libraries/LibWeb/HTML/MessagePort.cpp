@@ -22,6 +22,7 @@
 #include <LibWeb/HTML/MessageEvent.h>
 #include <LibWeb/HTML/MessagePort.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+#include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/StructuredSerializeOptions.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 
@@ -37,14 +38,13 @@ static HashTable<GC::RawPtr<MessagePort>>& all_message_ports()
     return ports;
 }
 
-GC::Ref<MessagePort> MessagePort::create(JS::Realm& realm, HTML::TransferType primary_interface)
+GC::Ref<MessagePort> MessagePort::create(JS::Realm& realm)
 {
-    return realm.create<MessagePort>(realm, primary_interface);
+    return realm.create<MessagePort>(realm);
 }
 
-MessagePort::MessagePort(JS::Realm& realm, HTML::TransferType primary_interface)
+MessagePort::MessagePort(JS::Realm& realm)
     : DOM::EventTarget(realm)
-    , m_primary_interface(primary_interface)
 {
     all_message_ports().set(this);
 }
@@ -88,7 +88,7 @@ void MessagePort::set_worker_event_target(GC::Ref<DOM::EventTarget> target)
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports:transfer-steps
-WebIDL::ExceptionOr<void> MessagePort::transfer_steps(HTML::TransferDataHolder& data_holder)
+WebIDL::ExceptionOr<void> MessagePort::transfer_steps(HTML::TransferDataEncoder& data_holder)
 {
     // 1. Set value's has been shipped flag to true.
     m_has_been_shipped = true;
@@ -101,23 +101,23 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_steps(HTML::TransferDataHolder& 
         // 1. Set remotePort's has been shipped flag to true.
         m_remote_port->m_has_been_shipped = true;
 
-        // 2. Set dataHolder.[[RemotePort]] to remotePort.
-        // TODO: Mach IPC
         auto fd = MUST(m_transport->release_underlying_transport_for_transfer());
         m_transport.clear();
-        data_holder.fds.append(IPC::File::adopt_fd(fd));
-        data_holder.data.append(IPC_FILE_TAG);
-    }
 
+        // 2. Set dataHolder.[[RemotePort]] to remotePort.
+        // TODO: Mach IPC
+        data_holder.encode(IPC_FILE_TAG);
+        data_holder.encode(IPC::File::adopt_fd(fd));
+    }
     // 4. Otherwise, set dataHolder.[[RemotePort]] to null.
     else {
-        data_holder.data.append(0);
+        data_holder.encode<u8>(0);
     }
 
     return {};
 }
 
-WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDataHolder& data_holder)
+WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDataDecoder& data_holder)
 {
     // 1. Set value's has been shipped flag to true.
     m_has_been_shipped = true;
@@ -128,14 +128,14 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDa
 
     // 3. If dataHolder.[[RemotePort]] is not null, then entangle dataHolder.[[RemotePort]] and value.
     //     (This will disentangle dataHolder.[[RemotePort]] from the original port that was transferred.)
-    auto fd_tag = data_holder.data.take_first();
-    if (fd_tag == IPC_FILE_TAG) {
+    if (auto fd_tag = data_holder.decode<u8>(); fd_tag == IPC_FILE_TAG) {
         // TODO: Mach IPC
-        auto fd = data_holder.fds.take_first();
+        auto fd = data_holder.decode<IPC::File>();
         m_transport = make<IPC::Transport>(MUST(Core::LocalSocket::adopt_fd(fd.take_fd())));
 
         m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
-            strong_this->read_from_transport();
+            if (strong_this->m_enabled)
+                strong_this->read_from_transport();
         });
     } else if (fd_tag != 0) {
         dbgln("Unexpected byte {:x} in MessagePort transfer data", fd_tag);
@@ -200,11 +200,13 @@ void MessagePort::entangle_with(MessagePort& remote_port)
     m_remote_port->m_transport = make<IPC::Transport>(move(sockets[1]));
 
     m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
-        strong_this->read_from_transport();
+        if (strong_this->m_enabled)
+            strong_this->read_from_transport();
     });
 
     m_remote_port->m_transport->set_up_read_hook([remote_port = GC::make_root(m_remote_port)]() {
-        remote_port->read_from_transport();
+        if (remote_port->m_enabled)
+            remote_port->read_from_transport();
     });
 }
 
@@ -270,7 +272,7 @@ WebIDL::ExceptionOr<void> MessagePort::message_port_post_message_steps(GC::Ptr<M
     }
 
     // 7. Add a task that runs the following steps to the port message queue of targetPort:
-    post_port_message(move(serialize_with_transfer_result));
+    post_port_message(serialize_with_transfer_result);
 
     return {};
 }
@@ -285,7 +287,7 @@ ErrorOr<void> MessagePort::send_message_on_transport(SerializedTransferRecord co
     return {};
 }
 
-void MessagePort::post_port_message(SerializedTransferRecord serialize_with_transfer_result)
+void MessagePort::post_port_message(SerializedTransferRecord const& serialize_with_transfer_result)
 {
     if (!m_transport || !m_transport->is_open())
         return;
@@ -297,6 +299,11 @@ void MessagePort::post_port_message(SerializedTransferRecord serialize_with_tran
 
 void MessagePort::read_from_transport()
 {
+    VERIFY(m_enabled);
+
+    if (!is_entangled())
+        return;
+
     auto schedule_shutdown = m_transport->read_as_many_messages_as_possible_without_blocking([this](auto&& raw_message) {
         FixedMemoryStream stream { raw_message.bytes.span(), FixedMemoryStream::Mode::ReadOnly };
         IPC::Decoder decoder { stream, raw_message.fds };
@@ -308,7 +315,7 @@ void MessagePort::read_from_transport()
         }));
     });
 
-    if (schedule_shutdown == IPC::TransportSocket::ShouldShutdown::Yes) {
+    if (schedule_shutdown == IPC::Transport::ShouldShutdown::Yes) {
         queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), GC::create_function(heap(), [this] {
             this->close();
         }));
@@ -317,6 +324,8 @@ void MessagePort::read_from_transport()
 
 void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_with_transfer_result)
 {
+    VERIFY(m_enabled);
+
     // 1. Let finalTargetPort be the MessagePort in whose port message queue the task now finds itself.
     // NOTE: This can be different from targetPort, if targetPort itself was transferred and thus all its tasks moved along with it.
     auto* final_target_port = this;
@@ -368,6 +377,14 @@ void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_wi
     message_event_target->dispatch_event(event);
 }
 
+void MessagePort::enable()
+{
+    if (!m_enabled) {
+        m_enabled = true;
+        read_from_transport();
+    }
+}
+
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-start
 void MessagePort::start()
 {
@@ -376,7 +393,8 @@ void MessagePort::start()
 
     VERIFY(m_transport);
 
-    // TODO: The start() method steps are to enable this's port message queue, if it is not already enabled.
+    // The start() method steps are to enable this's port message queue, if it is not already enabled.
+    enable();
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-close

@@ -1,8 +1,9 @@
 set(TEST_SOURCES
     TestCSSIDSpeed.cpp
-    TestCSSPixels.cpp
-    TestCSSTokenStream.cpp
     TestCSSInheritedProperty.cpp
+    TestCSSPixels.cpp
+    TestCSSSyntaxParser.cpp
+    TestCSSTokenStream.cpp
     TestFetchInfrastructure.cpp
     TestFetchURL.cpp
     TestHTMLTokenizer.cpp
@@ -13,7 +14,7 @@ set(TEST_SOURCES
 )
 
 foreach(source IN LISTS TEST_SOURCES)
-    serenity_test("${source}" LibWeb LIBS LibWeb)
+    ladybird_test("${source}" LibWeb LIBS LibWeb)
 endforeach()
 
 target_link_libraries(TestFetchURL PRIVATE LibURL)
@@ -33,3 +34,5 @@ if (ENABLE_SWIFT)
     target_link_libraries(TestLibWebSwift PRIVATE AK LibWeb LibGC SwiftTesting::SwiftTesting)
     add_test(NAME TestLibWebSwift COMMAND TestLibWebSwift)
 endif()
+
+add_subdirectory("test-web")

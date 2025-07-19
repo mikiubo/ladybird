@@ -384,9 +384,9 @@ void canonicalize_whitespace(DOM::BoundaryPoint boundary, bool fix_collapsed_spa
             auto parent_white_space_collapse = resolved_keyword(*start_node->parent(), CSS::PropertyID::WhiteSpaceCollapse);
 
             // FIXME: Find a way to get code points directly from the UTF-8 string
-            auto start_node_data = *start_node->text_content();
-            auto utf16_code_units = MUST(AK::utf8_to_utf16(start_node_data));
-            auto offset_minus_one_code_point = Utf16View { utf16_code_units }.code_point_at(start_offset - 1);
+            auto start_node_data = Utf16String::from_utf8(*start_node->text_content());
+            auto offset_minus_one_code_point = start_node_data.code_point_at(start_offset - 1);
+
             if (parent_white_space_collapse != CSS::Keyword::Preserve && (offset_minus_one_code_point == 0x20 || offset_minus_one_code_point == 0xA0)) {
                 --start_offset;
                 continue;
@@ -437,9 +437,9 @@ void canonicalize_whitespace(DOM::BoundaryPoint boundary, bool fix_collapsed_spa
             auto parent_white_space_collapse = resolved_keyword(*end_node->parent(), CSS::PropertyID::WhiteSpaceCollapse);
 
             // FIXME: Find a way to get code points directly from the UTF-8 string
-            auto end_node_data = *end_node->text_content();
-            auto utf16_code_units = MUST(AK::utf8_to_utf16(end_node_data));
-            auto offset_code_point = Utf16View { utf16_code_units }.code_point_at(end_offset);
+            auto end_node_data = Utf16String::from_utf8(*end_node->text_content());
+            auto offset_code_point = end_node_data.code_point_at(end_offset);
+
             if (parent_white_space_collapse != CSS::Keyword::Preserve && (offset_code_point == 0x20 || offset_code_point == 0xA0)) {
                 // 1. If fix collapsed space is true, and collapse spaces is true, and the end offsetth
                 //    code unit of end node's data is a space (0x0020): call deleteData(end offset, 1)
@@ -556,16 +556,14 @@ void canonicalize_whitespace(DOM::BoundaryPoint boundary, bool fix_collapsed_spa
             // 1. Remove the first code unit from replacement whitespace, and let element be that
             //    code unit.
             // FIXME: Find a way to get code points directly from the UTF-8 string
-            auto replacement_whitespace_utf16 = MUST(AK::utf8_to_utf16(replacement_whitespace));
-            auto replacement_whitespace_utf16_view = Utf16View { replacement_whitespace_utf16 };
-            replacement_whitespace = MUST(String::from_utf16({ replacement_whitespace_utf16_view.substring_view(1) }));
-            auto element = replacement_whitespace_utf16_view.code_point_at(0);
+            auto replacement_whitespace_utf16 = Utf16String::from_utf8(replacement_whitespace);
+            replacement_whitespace = MUST(replacement_whitespace_utf16.substring_view(1).to_utf8());
+            auto element = replacement_whitespace_utf16.code_point_at(0);
 
             // 2. If element is not the same as the start offsetth code unit of start node's data:
-            auto start_node_data = *start_node->text_content();
-            auto start_node_utf16 = MUST(AK::utf8_to_utf16(start_node_data));
-            auto start_node_utf16_view = Utf16View { start_node_utf16 };
-            auto start_node_code_point = start_node_utf16_view.code_point_at(start_offset);
+            auto start_node_data = Utf16String::from_utf8(*start_node->text_content());
+            auto start_node_code_point = start_node_data.code_point_at(start_offset);
+
             if (element != start_node_code_point) {
                 // 1. Call insertData(start offset, element) on start node.
                 auto& start_node_character_data = static_cast<DOM::CharacterData&>(*start_node);
@@ -1174,7 +1172,8 @@ Optional<String> effective_command_value(GC::Ptr<DOM::Node> node, FlyString cons
             if (!background_color.has_value())
                 return NumericLimits<u8>::max();
             VERIFY(is<Layout::NodeWithStyle>(node->layout_node()));
-            return background_color.value()->to_color(*static_cast<Layout::NodeWithStyle*>(node->layout_node())).alpha();
+            auto& layout_node = *static_cast<Layout::NodeWithStyle*>(node->layout_node());
+            return background_color.value()->to_color(layout_node, { .length_resolution_context = CSS::Length::ResolutionContext::for_layout_node(layout_node) }).value().alpha();
         };
         while (resolved_background_alpha() == 0 && node->parent() && is<DOM::Element>(*node->parent()))
             node = node->parent();
@@ -3459,7 +3458,7 @@ void reorder_modifiable_descendants(GC::Ref<DOM::Node> node, FlyString const& co
     if (candidate == node
         || !is_simple_modifiable_element(*candidate)
         || specified_command_value(static_cast<DOM::Element&>(*candidate), command) != new_value
-        || !values_are_loosely_equivalent(CommandNames::createLink, effective_command_value(candidate, command), new_value))
+        || !values_are_loosely_equivalent(command, effective_command_value(candidate, command), new_value))
         return;
 
     // 4. While candidate has children, insert the first child of candidate into candidate's parent immediately before
@@ -4741,7 +4740,7 @@ Optional<NonnullRefPtr<CSS::CSSStyleValue const>> resolved_value(GC::Ref<DOM::No
         return {};
 
     // Retrieve resolved style value
-    auto resolved_css_style_declaration = CSS::CSSStyleProperties::create_resolved_style({ static_cast<DOM::Element&>(*element) });
+    auto resolved_css_style_declaration = CSS::CSSStyleProperties::create_resolved_style(element->realm(), DOM::AbstractElement { static_cast<DOM::Element&>(*element) });
     auto optional_style_property = resolved_css_style_declaration->property(property_id);
     if (!optional_style_property.has_value())
         return {};

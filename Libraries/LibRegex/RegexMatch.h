@@ -8,14 +8,15 @@
 
 #include "Forward.h"
 #include "RegexOptions.h"
-#include <AK/Error.h>
 
 #include <AK/ByteString.h>
 #include <AK/COWVector.h>
+#include <AK/Error.h>
 #include <AK/FlyString.h>
 #include <AK/MemMem.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
+#include <AK/Utf16String.h>
 #include <AK/Utf16View.h>
 #include <AK/Utf32View.h>
 #include <AK/Utf8View.h>
@@ -110,7 +111,7 @@ public:
         return view;
     }
 
-    RegexStringView construct_as_same(Span<u32> data, Optional<ByteString>& optional_string_storage, Utf16Data& optional_utf16_storage) const
+    RegexStringView construct_as_same(Span<u32> data, Optional<ByteString>& optional_string_storage, Utf16String& optional_utf16_storage) const
     {
         auto view = m_view.visit(
             [&optional_string_storage, data]<typename T>(T const&) {
@@ -121,11 +122,8 @@ public:
                 return RegexStringView { T { *optional_string_storage } };
             },
             [&optional_utf16_storage, data](Utf16View) {
-                auto conversion_result = utf32_to_utf16(Utf32View { data.data(), data.size() }).release_value_but_fixme_should_propagate_errors();
-                optional_utf16_storage = conversion_result.data;
-                auto view = Utf16View { optional_utf16_storage };
-                view.unsafe_set_code_point_length(conversion_result.code_point_count);
-                return RegexStringView { view };
+                optional_utf16_storage = Utf16String::from_utf32({ data.data(), data.size() });
+                return RegexStringView { optional_utf16_storage.utf16_view() };
             });
 
         view.set_unicode(unicode());
@@ -147,9 +145,8 @@ public:
                     return Vector<RegexStringView> { view };
 
                 Vector<RegexStringView> views;
-                u16 newline = '\n';
                 while (!view.is_empty()) {
-                    auto position = AK::memmem_optional(view.data(), view.length_in_code_units() * sizeof(u16), &newline, sizeof(u16));
+                    auto position = view.find_code_unit_offset(u'\n');
                     if (!position.has_value())
                         break;
                     auto offset = position.value() / sizeof(u16);
@@ -182,7 +179,7 @@ public:
     {
         return m_view.visit(
             [](StringView view) { return view.to_byte_string(); },
-            [](Utf16View view) { return view.to_byte_string(Utf16View::AllowInvalidCodeUnits::Yes).release_value_but_fixme_should_propagate_errors(); },
+            [](Utf16View view) { return view.to_byte_string().release_value_but_fixme_should_propagate_errors(); },
             [](auto& view) {
                 StringBuilder builder;
                 for (auto it = view.begin(); it != view.end(); ++it)
@@ -195,7 +192,7 @@ public:
     {
         return m_view.visit(
             [](StringView view) { return String::from_utf8(view); },
-            [](Utf16View view) { return view.to_utf8(Utf16View::AllowInvalidCodeUnits::Yes); },
+            [](Utf16View view) { return view.to_utf8(); },
             [](auto& view) -> ErrorOr<String> {
                 StringBuilder builder;
                 for (auto it = view.begin(); it != view.end(); ++it)

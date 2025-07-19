@@ -155,13 +155,16 @@
   "stalled": {
     "argument": ""
   },
+  "state": {
+    "argument": "<ident>"
+  },
   "suboptimal-value": {
     "argument": ""
   },
   "target": {
     "argument": ""
   },
-  "target-within": {
+  "unchecked": {
     "argument": ""
   },
   "user-invalid": {

@@ -97,7 +97,7 @@ static ThrowCompletionOr<TypedArrayBase*> typed_array_species_create(VM& vm, Typ
     auto& realm = *vm.current_realm();
 
     // 1. Let defaultConstructor be the intrinsic object listed in column one of Table 72 for exemplar.[[TypedArrayName]].
-    auto default_constructor = (realm.intrinsics().*exemplar.intrinsic_constructor())();
+    auto default_constructor = exemplar.intrinsic_constructor(realm);
 
     // 2. Let constructor be ? SpeciesConstructor(exemplar, defaultConstructor).
     auto* constructor = TRY(species_constructor(vm, exemplar, *default_constructor));
@@ -381,6 +381,25 @@ JS_DEFINE_NATIVE_FUNCTION(TypedArrayPrototype::copy_within)
         else {
             // i. Let direction be 1.
             direction = 1;
+        }
+
+        // OPTIMIZATION: Fast path for non-shared ArrayBuffers that are not detached and have enough space to perform the copy with memmove.
+        if (!buffer->is_shared_array_buffer()) {
+            Checked<size_t> from_end = from_byte_index;
+            from_end += count_bytes;
+            Checked<size_t> to_end = to_byte_index;
+            to_end += count_bytes;
+
+            if (!from_end.has_overflow()
+                && !to_end.has_overflow()
+                && from_end.value() <= buffer_byte_limit
+                && to_end.value() <= buffer_byte_limit) {
+                auto* base = buffer->buffer().data();
+                void const* src = base + from_byte_index;
+                void* dst = base + to_byte_index;
+                memmove(dst, src, count_bytes);
+                return typed_array;
+            }
         }
 
         // n. Repeat, while countBytes > 0,

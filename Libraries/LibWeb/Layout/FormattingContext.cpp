@@ -37,6 +37,10 @@ bool FormattingContext::creates_block_formatting_context(Box const& box)
     if (box.is_replaced_box())
         return false;
 
+    // AD-HOC: We create a BFC for SVG foreignObject.
+    if (box.is_svg_foreign_object_box())
+        return true;
+
     // display: table
     if (box.display().is_table_inside()) {
         return false;
@@ -148,8 +152,8 @@ Optional<FormattingContext::Type> FormattingContext::formatting_context_type_cre
         return Type::Grid;
 
     if (display.is_math_inside())
-        // HACK: Instead of crashing, create a dummy formatting context that does nothing.
-        return Type::InternalDummy;
+        // FIXME: We should create a MathML-specific formatting context here, but for now use a BFC, so _something_ is displayed
+        return Type::Block;
 
     if (creates_block_formatting_context(box))
         return Type::Block;
@@ -1513,8 +1517,11 @@ CSSPixels FormattingContext::calculate_min_content_height(Layout::Box const& box
     if (box.is_block_container() || box.display().is_table_inside())
         return calculate_max_content_height(box, width);
 
-    if (box.has_natural_height())
+    if (box.has_natural_height()) {
+        if (box.has_natural_aspect_ratio())
+            return width / *box.natural_aspect_ratio();
         return *box.natural_height();
+    }
 
     auto& cache = box.cached_intrinsic_sizes().min_content_height.ensure(width);
     if (cache.has_value())
@@ -1602,6 +1609,8 @@ CSSPixels FormattingContext::calculate_inner_width(Layout::Box const& box, Avail
 CSSPixels FormattingContext::calculate_inner_height(Box const& box, AvailableSpace const& available_space, CSS::Size const& height) const
 {
     if (height.is_auto() && box.has_preferred_aspect_ratio()) {
+        if (*box.preferred_aspect_ratio() == 0)
+            return CSSPixels(0);
         return m_state.get(box).content_width() / *box.preferred_aspect_ratio();
     }
 
@@ -1796,8 +1805,8 @@ CSSPixels FormattingContext::box_baseline(Box const& box) const
             // Top: Align the top of the aligned subtree with the top of the line box.
             return box_state.border_box_top();
         case CSS::VerticalAlign::Middle:
-            // Align the vertical midpoint of the box with the baseline of the parent box plus half the x-height of the parent.
-            return box_state.content_height() / 2 + CSSPixels::nearest_value_for(box.containing_block()->first_available_font().pixel_metrics().x_height / 2);
+            // Middle: Align the vertical midpoint of the box with the baseline of the parent box plus half the x-height of the parent.
+            return box_state.margin_box_height() / 2 + CSSPixels::nearest_value_for(box.containing_block()->first_available_font().pixel_metrics().x_height / 2);
         case CSS::VerticalAlign::Bottom:
             // Bottom: Align the bottom of the aligned subtree with the bottom of the line box.
             return box_state.content_height() + box_state.margin_box_top();
@@ -1805,8 +1814,8 @@ CSSPixels FormattingContext::box_baseline(Box const& box) const
             // TextTop: Align the top of the box with the top of the parent's content area (see 10.6.1).
             return box.computed_values().font_size();
         case CSS::VerticalAlign::TextBottom:
-            // TextTop: Align the bottom of the box with the bottom of the parent's content area (see 10.6.1).
-            return box_state.content_height() - CSSPixels::nearest_value_for(box.containing_block()->first_available_font().pixel_metrics().descent * 2);
+            // TextBottom: Align the bottom of the box with the bottom of the parent's content area (see 10.6.1).
+            return box_state.margin_box_height() - CSSPixels::nearest_value_for(box.containing_block()->first_available_font().pixel_metrics().descent * 2);
         default:
             break;
         }

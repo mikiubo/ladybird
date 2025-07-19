@@ -7,6 +7,9 @@ interface Internals {
 
     undefined signalTestIsDone(DOMString text);
     undefined setTestTimeout(double milliseconds);
+    undefined loadReferenceTestMetadata();
+
+    DOMString setTimeZone(DOMString timeZone);
 
     undefined gc();
     object hitTest(double x, double y);
@@ -48,4 +51,6 @@ interface Internals {
     undefined setBrowserZoom(double factor);
 
     readonly attribute boolean headless;
+
+    DOMString dumpDisplayList();
 };

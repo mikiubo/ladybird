@@ -9,13 +9,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Bitmap.h>
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
 #include <AK/GenericLexer.h>
 #include <AK/InsertionSort.h>
 #include <AK/StringBuilder.h>
 #include <AK/TemporaryChange.h>
+#include <AK/Time.h>
 #include <AK/Utf8View.h>
+#include <LibCore/DateTime.h>
 #include <LibCore/Timer.h>
 #include <LibGC/RootVector.h>
 #include <LibJS/Runtime/Array.h>
@@ -44,6 +47,7 @@
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleSheetIdentifier.h>
 #include <LibWeb/CSS/StyleValues/ColorSchemeStyleValue.h>
+#include <LibWeb/CSS/StyleValues/GuaranteedInvalidStyleValue.h>
 #include <LibWeb/CSS/SystemColor.h>
 #include <LibWeb/CSS/TransitionEvent.h>
 #include <LibWeb/CSS/VisualViewport.h>
@@ -74,6 +78,7 @@
 #include <LibWeb/DOM/ProcessingInstruction.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/DOM/StyleInvalidator.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/DOM/TreeWalker.h>
 #include <LibWeb/DOM/Utils.h>
@@ -89,6 +94,7 @@
 #include <LibWeb/HTML/CustomElements/CustomElementReactionNames.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/HTML/DocumentState.h>
+#include <LibWeb/HTML/DragEvent.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/Focus.h>
@@ -132,6 +138,8 @@
 #include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
 #include <LibWeb/HTML/SharedResourceRequest.h>
 #include <LibWeb/HTML/Storage.h>
+#include <LibWeb/HTML/StorageEvent.h>
+#include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WindowProxy.h>
@@ -145,6 +153,7 @@
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Namespace.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/PermissionsPolicy/AutoplayAllowlist.h>
 #include <LibWeb/ResizeObserver/ResizeObserver.h>
@@ -373,8 +382,12 @@ WebIDL::ExceptionOr<GC::Ref<Document>> Document::create_and_initialize(Type type
     document->m_window = window;
 
     // NOTE: Non-standard: Pull out the Last-Modified header for use in the lastModified property.
-    if (auto maybe_last_modified = navigation_params.response->header_list()->get("Last-Modified"sv.bytes()); maybe_last_modified.has_value())
-        document->m_last_modified = Core::DateTime::parse("%a, %d %b %Y %H:%M:%S %Z"sv, maybe_last_modified.value());
+    if (auto maybe_last_modified = navigation_params.response->header_list()->get("Last-Modified"sv.bytes()); maybe_last_modified.has_value()) {
+        auto last_modified_datetime = Core::DateTime::parse("%a, %d %b %Y %H:%M:%S %Z"sv, maybe_last_modified.value());
+        document->m_last_modified = last_modified_datetime.has_value()
+            ? AK::UnixDateTime::from_seconds_since_epoch(last_modified_datetime.value().timestamp())
+            : Optional<AK::UnixDateTime>();
+    }
 
     // NOTE: Non-standard: Pull out the Content-Language header to determine the document's language.
     if (auto maybe_http_content_language = navigation_params.response->header_list()->get("Content-Language"sv.bytes()); maybe_http_content_language.has_value()) {
@@ -424,9 +437,13 @@ WebIDL::ExceptionOr<GC::Ref<Document>> Document::create_and_initialize(Type type
     return document;
 }
 
-WebIDL::ExceptionOr<GC::Ref<Document>> Document::construct_impl(JS::Realm& realm)
+// https://dom.spec.whatwg.org/#dom-document-document
+GC::Ref<Document> Document::construct_impl(JS::Realm& realm)
 {
-    return Document::create(realm);
+    // The new Document() constructor steps are to set this’s origin to the origin of current global object’s associated Document. [HTML]
+    auto document = Document::create(realm);
+    document->set_origin(as<HTML::Window>(HTML::current_principal_global_object()).associated_document().origin());
+    return document;
 }
 
 GC::Ref<Document> Document::create(JS::Realm& realm, URL::URL const& url)
@@ -446,6 +463,7 @@ Document::Document(JS::Realm& realm, const URL::URL& url, TemporaryDocumentForFr
     , m_url(url)
     , m_temporary_document_for_fragment_parsing(temporary_document_for_fragment_parsing)
     , m_editing_host_manager(EditingHostManager::create(realm, *this))
+    , m_style_invalidator(realm.heap().allocate<StyleInvalidator>())
 {
     m_legacy_platform_object_flags = PlatformObject::LegacyPlatformObjectFlags {
         .supports_named_properties = true,
@@ -529,6 +547,7 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_inspected_node);
     visitor.visit(m_highlighted_node);
     visitor.visit(m_active_favicon);
+    visitor.visit(m_browsing_context);
     visitor.visit(m_focused_element);
     visitor.visit(m_active_element);
     visitor.visit(m_target_element);
@@ -603,6 +622,8 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_session_storage_holder);
     visitor.visit(m_render_blocking_elements);
     visitor.visit(m_policy_container);
+    visitor.visit(m_style_invalidator);
+    visitor.visit(m_registered_custom_properties);
 }
 
 // https://w3c.github.io/selection-api/#dom-document-getselection
@@ -703,7 +724,7 @@ WebIDL::ExceptionOr<Document*> Document::open(Optional<String> const&, Optional<
         }));
     }
 
-    // 1. If document is an XML document, then throw an "InvalidStateError" DOMException exception.
+    // 1. If document is an XML document, then throw an "InvalidStateError" DOMException.
     if (m_type == Type::XML)
         return WebIDL::InvalidStateError::create(realm(), "open() called on XML document."_string);
 
@@ -783,7 +804,7 @@ WebIDL::ExceptionOr<Document*> Document::open(Optional<String> const&, Optional<
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-open-window
 WebIDL::ExceptionOr<GC::Ptr<HTML::WindowProxy>> Document::open(StringView url, StringView name, StringView features)
 {
-    // 1. If this is not fully active, then throw an "InvalidAccessError" DOMException exception.
+    // 1. If this is not fully active, then throw an "InvalidAccessError" DOMException.
     if (!is_fully_active())
         return WebIDL::InvalidAccessError::create(realm(), "Cannot perform open on a document that isn't fully active."_string);
 
@@ -846,24 +867,6 @@ URL::Origin const& Document::origin() const
 void Document::set_origin(URL::Origin const& origin)
 {
     m_origin = origin;
-}
-
-void Document::schedule_style_update()
-{
-    if (!browsing_context())
-        return;
-
-    // NOTE: Update of the style is a step in HTML event loop processing.
-    HTML::main_thread_event_loop().schedule();
-}
-
-void Document::schedule_layout_update()
-{
-    if (!browsing_context())
-        return;
-
-    // NOTE: Update of the layout is a step in HTML event loop processing.
-    HTML::main_thread_event_loop().schedule();
 }
 
 bool Document::is_child_allowed(Node const& node) const
@@ -1125,10 +1128,10 @@ Vector<CSS::BackgroundLayerData> const* Document::background_layers() const
 
 void Document::update_base_element(Badge<HTML::HTMLBaseElement>)
 {
-    GC::Ptr<HTML::HTMLBaseElement const> base_element_with_href = nullptr;
-    GC::Ptr<HTML::HTMLBaseElement const> base_element_with_target = nullptr;
+    GC::Ptr<HTML::HTMLBaseElement> base_element_with_href = nullptr;
+    GC::Ptr<HTML::HTMLBaseElement> base_element_with_target = nullptr;
 
-    for_each_in_subtree_of_type<HTML::HTMLBaseElement>([&base_element_with_href, &base_element_with_target](HTML::HTMLBaseElement const& base_element_in_tree) {
+    for_each_in_subtree_of_type<HTML::HTMLBaseElement>([&base_element_with_href, &base_element_with_target](HTML::HTMLBaseElement& base_element_in_tree) {
         if (!base_element_with_href && base_element_in_tree.has_attribute(HTML::AttributeNames::href)) {
             base_element_with_href = &base_element_in_tree;
             if (base_element_with_target)
@@ -1147,12 +1150,12 @@ void Document::update_base_element(Badge<HTML::HTMLBaseElement>)
     m_first_base_element_with_target_in_tree_order = base_element_with_target;
 }
 
-GC::Ptr<HTML::HTMLBaseElement const> Document::first_base_element_with_href_in_tree_order() const
+GC::Ptr<HTML::HTMLBaseElement> Document::first_base_element_with_href_in_tree_order() const
 {
     return m_first_base_element_with_href_in_tree_order;
 }
 
-GC::Ptr<HTML::HTMLBaseElement const> Document::first_base_element_with_target_in_tree_order() const
+GC::Ptr<HTML::HTMLBaseElement> Document::first_base_element_with_target_in_tree_order() const
 {
     return m_first_base_element_with_target_in_tree_order;
 }
@@ -1187,16 +1190,6 @@ URL::URL Document::base_url() const
 
     // 2. Otherwise, return the frozen base URL of the first base element in the Document that has an href attribute, in tree order.
     return base_element->frozen_base_url();
-}
-
-// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url
-Optional<URL::URL> Document::parse_url(StringView url) const
-{
-    // 1. Let baseURL be environment's base URL, if environment is a Document object; otherwise environment's API base URL.
-    auto base_url = this->base_url();
-
-    // 2. Return the result of applying the URL parser to url, with baseURL.
-    return DOMURL::parse(url, base_url);
 }
 
 // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#encoding-parsing-a-url
@@ -1235,7 +1228,6 @@ void Document::invalidate_layout_tree(InvalidateLayoutTreeReason reason)
     if (m_layout_root)
         dbgln_if(UPDATE_LAYOUT_DEBUG, "DROP TREE {}", to_string(reason));
     tear_down_layout_tree();
-    schedule_layout_update();
 }
 
 static void propagate_scrollbar_width_to_viewport(Element& root_element, Layout::Viewport& viewport)
@@ -1406,13 +1398,21 @@ void Document::update_layout(UpdateLayoutReason reason)
     update_paint_and_hit_testing_properties_if_needed();
     paintable()->assign_clip_frames();
 
-    if (navigable->is_traversable()) {
-        page().client().page_did_layout();
-    }
-
     if (auto range = get_selection()->range()) {
         paintable()->recompute_selection_states(*range);
     }
+
+    // Collect elements with content-visibility: auto. This is used in the HTML event loop to avoid traversing the whole tree every time.
+    Vector<GC::Ref<Painting::PaintableBox>> paintable_boxes_with_auto_content_visibility;
+    paintable()->for_each_in_subtree_of_type<Painting::PaintableBox>([&](auto& paintable_box) {
+        if (paintable_box.dom_node()
+            && paintable_box.dom_node()->is_element()
+            && paintable_box.computed_values().content_visibility() == CSS::ContentVisibility::Auto) {
+            paintable_boxes_with_auto_content_visibility.append(paintable_box);
+        }
+        return TraversalDecision::Continue;
+    });
+    paintable()->set_paintable_boxes_with_auto_content_visibility(move(paintable_boxes_with_auto_content_visibility));
 
     m_layout_root->for_each_in_inclusive_subtree([](auto& node) {
         node.reset_needs_layout_update();
@@ -1496,34 +1496,6 @@ void Document::update_layout(UpdateLayoutReason reason)
     return invalidation;
 }
 
-// This function makes a full pass over the entire DOM and converts "entire subtree needs style update"
-// into "needs style update" for each inclusive descendant where it's found.
-static void perform_pending_style_invalidations(Node& node, bool invalidate_entire_subtree)
-{
-    invalidate_entire_subtree |= node.entire_subtree_needs_style_update();
-
-    if (invalidate_entire_subtree) {
-        node.set_needs_style_update_internal(true);
-        if (node.has_child_nodes())
-            node.set_child_needs_style_update(true);
-    }
-
-    for (auto* child = node.first_child(); child; child = child->next_sibling()) {
-        perform_pending_style_invalidations(*child, invalidate_entire_subtree);
-    }
-
-    if (node.is_element()) {
-        auto& element = static_cast<Element&>(node);
-        if (auto shadow_root = element.shadow_root()) {
-            perform_pending_style_invalidations(*shadow_root, invalidate_entire_subtree);
-            if (invalidate_entire_subtree)
-                node.set_child_needs_style_update(true);
-        }
-    }
-
-    node.set_entire_subtree_needs_style_update(false);
-}
-
 void Document::update_style()
 {
     if (!browsing_context())
@@ -1537,10 +1509,10 @@ void Document::update_style()
 
     invalidate_style_of_elements_affected_by_has();
 
-    if (!needs_full_style_update() && !needs_style_update() && !child_needs_style_update())
+    if (!m_style_invalidator->has_pending_invalidations() && !needs_full_style_update() && !needs_style_update() && !child_needs_style_update())
         return;
 
-    perform_pending_style_invalidations(*this, false);
+    m_style_invalidator->invalidate(*this);
 
     // NOTE: If this is a document hosting <template> contents, style update is unnecessary.
     if (m_created_for_appropriate_template_contents)
@@ -1566,15 +1538,18 @@ void Document::update_animated_style_if_needed()
     if (!m_needs_animated_style_update)
         return;
 
+    Animations::AnimationUpdateContext context;
+
     for (auto& timeline : m_associated_animation_timelines) {
         for (auto& animation : timeline->associated_animations()) {
             if (animation->is_idle() || animation->is_finished())
                 continue;
             if (auto effect = animation->effect()) {
-                effect->update_computed_properties();
+                effect->update_computed_properties(context);
             }
         }
     }
+
     m_needs_animated_style_update = false;
 }
 
@@ -1675,10 +1650,13 @@ void Document::obtain_theme_color()
             // 4. If color is not failure, then return color.
             if (!css_value.is_null() && css_value->has_color()) {
                 Optional<Layout::NodeWithStyle const&> root_node;
-                if (html_element() && html_element()->layout_node())
+                CSS::CalculationResolutionContext resolution_context;
+                if (html_element() && html_element()->layout_node()) {
                     root_node = *html_element()->layout_node();
+                    resolution_context.length_resolution_context = CSS::Length::ResolutionContext::for_layout_node(*html_element()->layout_node());
+                }
 
-                theme_color = css_value->to_color(root_node);
+                theme_color = css_value->to_color(root_node, resolution_context).value();
                 return TraversalDecision::Break;
             }
         }
@@ -2090,8 +2068,8 @@ HTML::EnvironmentSettingsObject& Document::relevant_settings_object() const
 // https://dom.spec.whatwg.org/#dom-document-createelement
 WebIDL::ExceptionOr<GC::Ref<Element>> Document::create_element(String const& local_name, Variant<String, ElementCreationOptions> const& options)
 {
-    // 1. If localName does not match the Name production, then throw an "InvalidCharacterError" DOMException.
-    if (!is_valid_name(local_name))
+    // 1. If localName is not a valid element local name, then throw an "InvalidCharacterError" DOMException.
+    if (!is_valid_element_local_name(local_name))
         return WebIDL::InvalidCharacterError::create(realm(), "Invalid character in tag name."_string);
 
     // 2. If this is an HTML document, then set localName to localName in ASCII lowercase.
@@ -2122,8 +2100,8 @@ WebIDL::ExceptionOr<GC::Ref<Element>> Document::create_element(String const& loc
 // https://dom.spec.whatwg.org/#internal-createelementns-steps
 WebIDL::ExceptionOr<GC::Ref<Element>> Document::create_element_ns(Optional<FlyString> const& namespace_, String const& qualified_name, Variant<String, ElementCreationOptions> const& options)
 {
-    // 1. Let namespace, prefix, and localName be the result of passing namespace and qualifiedName to validate and extract.
-    auto extracted_qualified_name = TRY(validate_and_extract(realm(), namespace_, qualified_name));
+    // 1. Let (namespace, prefix, localName) be the result of validating and extracting namespace and qualifiedName given "element".
+    auto extracted_qualified_name = TRY(validate_and_extract(realm(), namespace_, qualified_name, ValidationContext::Element));
 
     // 2. Let is be null.
     Optional<String> is_value;
@@ -2211,7 +2189,7 @@ WebIDL::ExceptionOr<GC::Ref<Event>> Document::create_event(StringView interface)
     } else if (interface.equals_ignoring_ascii_case("deviceorientationevent"sv)) {
         event = Event::create(realm, FlyString {}); // FIXME: Create DeviceOrientationEvent
     } else if (interface.equals_ignoring_ascii_case("dragevent"sv)) {
-        event = Event::create(realm, FlyString {}); // FIXME: Create DragEvent
+        event = HTML::DragEvent::create(realm, FlyString {});
     } else if (interface.equals_ignoring_ascii_case("event"sv)
         || interface.equals_ignoring_ascii_case("events"sv)) {
         event = Event::create(realm, FlyString {});
@@ -2229,7 +2207,7 @@ WebIDL::ExceptionOr<GC::Ref<Event>> Document::create_event(StringView interface)
         || interface.equals_ignoring_ascii_case("mouseevents"sv)) {
         event = UIEvents::MouseEvent::create(realm, FlyString {});
     } else if (interface.equals_ignoring_ascii_case("storageevent"sv)) {
-        event = Event::create(realm, FlyString {}); // FIXME: Create StorageEvent
+        event = HTML::StorageEvent::create(realm, FlyString {});
     } else if (interface.equals_ignoring_ascii_case("svgevents"sv)) {
         event = Event::create(realm, FlyString {});
     } else if (interface.equals_ignoring_ascii_case("textevent"sv)) {
@@ -2571,15 +2549,12 @@ void Document::set_target_element(GC::Ptr<Element> element)
     if (old_target_node_root != new_target_node_root) {
         if (old_target_node_root) {
             invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass::Target, m_target_element, *old_target_node_root, element);
-            invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass::TargetWithin, m_target_element, *old_target_node_root, element);
         }
         if (new_target_node_root) {
             invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass::Target, m_target_element, *new_target_node_root, element);
-            invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass::TargetWithin, m_target_element, *new_target_node_root, element);
         }
     } else {
         invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass::Target, m_target_element, *common_ancestor, element);
-        invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass::TargetWithin, m_target_element, *common_ancestor, element);
     }
 
     m_target_element = element;
@@ -3054,7 +3029,7 @@ String Document::last_modified() const
     if (m_last_modified.has_value())
         return MUST(m_last_modified.value().to_string(format_string));
 
-    return MUST(Core::DateTime::now().to_string(format_string));
+    return MUST(AK::UnixDateTime::now().to_string(format_string));
 }
 
 Page& Document::page()
@@ -3362,13 +3337,21 @@ void Document::update_the_visibility_state(HTML::VisibilityState visibility_stat
     // 2. Set document's visibility state to visibilityState.
     m_visibility_state = visibility_state;
 
-    // 3. Run any page visibility change steps which may be defined in other specifications, with visibility state and document.
+    // FIXME: 3. Queue a new VisibilityStateEntry whose visibility state is visibilityState and whose timestamp is the current
+    //    high resolution time given document's relevant global object.
+
+    // FIXME: 4. Run the screen orientation change steps with document.
+
+    // FIXME: 5. Run the view transition page visibility change steps with document.
+
+    // 6. Run any page visibility change steps which may be defined in other specifications, with visibility state and
+    //    document.
     notify_each_document_observer([&](auto const& document_observer) {
         return document_observer.document_visibility_state_observer();
     },
         m_visibility_state);
 
-    // 4. Fire an event named visibilitychange at document, with its bubbles attribute initialized to true.
+    // 7. Fire an event named visibilitychange at document, with its bubbles attribute initialized to true.
     auto event = DOM::Event::create(realm(), HTML::EventNames::visibilitychange);
     event->set_bubbles(true);
     dispatch_event(event);
@@ -3400,8 +3383,6 @@ void Document::run_the_resize_steps()
         visual_viewport_resize_event->set_is_trusted(true);
         visual_viewport()->dispatch_event(visual_viewport_resize_event);
     }
-
-    schedule_layout_update();
 }
 
 // https://w3c.github.io/csswg-drafts/cssom-view-1/#document-run-the-scroll-steps
@@ -3586,55 +3567,6 @@ bool Document::is_valid_name(String const& name)
     }
 
     return true;
-}
-
-// https://dom.spec.whatwg.org/#validate
-WebIDL::ExceptionOr<Document::PrefixAndTagName> Document::validate_qualified_name(JS::Realm& realm, FlyString const& qualified_name)
-{
-    if (qualified_name.is_empty())
-        return WebIDL::InvalidCharacterError::create(realm, "Empty string is not a valid qualified name."_string);
-
-    auto utf8view = qualified_name.code_points();
-
-    Optional<size_t> colon_offset;
-
-    bool at_start_of_name = true;
-
-    for (auto it = utf8view.begin(); it != utf8view.end(); ++it) {
-        auto code_point = *it;
-        if (code_point == ':') {
-            if (colon_offset.has_value())
-                return WebIDL::InvalidCharacterError::create(realm, "More than one colon (:) in qualified name."_string);
-            colon_offset = utf8view.byte_offset_of(it);
-            at_start_of_name = true;
-            continue;
-        }
-        if (at_start_of_name) {
-            if (!is_valid_name_start_character(code_point))
-                return WebIDL::InvalidCharacterError::create(realm, "Invalid start of qualified name."_string);
-            at_start_of_name = false;
-            continue;
-        }
-        if (!is_valid_name_character(code_point))
-            return WebIDL::InvalidCharacterError::create(realm, "Invalid character in qualified name."_string);
-    }
-
-    if (!colon_offset.has_value())
-        return Document::PrefixAndTagName {
-            .prefix = {},
-            .tag_name = qualified_name,
-        };
-
-    if (*colon_offset == 0)
-        return WebIDL::InvalidCharacterError::create(realm, "Qualified name can't start with colon (:)."_string);
-
-    if (*colon_offset >= (qualified_name.bytes_as_string_view().length() - 1))
-        return WebIDL::InvalidCharacterError::create(realm, "Qualified name can't end with colon (:)."_string);
-
-    return Document::PrefixAndTagName {
-        .prefix = MUST(FlyString::from_utf8(qualified_name.bytes_as_string_view().substring_view(0, *colon_offset))),
-        .tag_name = MUST(FlyString::from_utf8(qualified_name.bytes_as_string_view().substring_view(*colon_offset + 1))),
-    };
 }
 
 // https://dom.spec.whatwg.org/#dom-document-createnodeiterator
@@ -3842,9 +3774,85 @@ String Document::domain() const
     return effective_domain->serialize();
 }
 
-void Document::set_domain(String const& domain)
+// https://html.spec.whatwg.org/multipage/browsers.html#is-a-registrable-domain-suffix-of-or-is-equal-to
+static bool is_a_registrable_domain_suffix_of_or_is_equal_to(StringView host_suffix_string, URL::Host const& original_host)
 {
+    // 1. If hostSuffixString is the empty string, then return false.
+    if (host_suffix_string.is_empty())
+        return false;
+
+    // 2. Let hostSuffix be the result of parsing hostSuffixString.
+    auto host_suffix = URL::Parser::parse_host(host_suffix_string);
+
+    // 3. If hostSuffix is failure, then return false.
+    if (!host_suffix.has_value())
+        return false;
+
+    // 4. If hostSuffix does not equal originalHost, then:
+    if (host_suffix.value() != original_host) {
+        // 1. If hostSuffix or originalHost is not a domain, then return false.
+        // NOTE: This excludes hosts that are IP addresses.
+        if (!host_suffix->has<String>() || !original_host.has<String>())
+            return false;
+        auto const& host_suffix_string = host_suffix->get<String>();
+        auto const& original_host_string = original_host.get<String>();
+
+        // 2. If hostSuffix, prefixed by U+002E (.), does not match the end of originalHost, then return false.
+        auto prefixed_host_suffix = MUST(String::formatted(".{}", host_suffix_string));
+        if (!original_host_string.ends_with_bytes(prefixed_host_suffix))
+            return false;
+
+        // 3. If any of the following are true:
+        //     * hostSuffix equals hostSuffix's public suffix; or
+        //     * hostSuffix, prefixed by U+002E (.), matches the end of originalHost's public suffix,
+        //    then return false. [URL]
+        if (host_suffix_string == host_suffix->public_suffix())
+            return false;
+
+        auto original_host_public_suffix = original_host.public_suffix();
+        VERIFY(original_host_public_suffix.has_value());
+
+        if (original_host_public_suffix->ends_with_bytes(prefixed_host_suffix))
+            return false;
+
+        // 4. Assert: originalHost's public suffix, prefixed by U+002E (.), matches the end of hostSuffix.
+        VERIFY(host_suffix_string.ends_with_bytes(MUST(String::formatted(".{}", *original_host_public_suffix))));
+    }
+
+    // 5. Return true.
+    return true;
+}
+
+// https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain
+WebIDL::ExceptionOr<void> Document::set_domain(String const& domain)
+{
+    auto& realm = this->realm();
+
+    // 1. If this's browsing context is null, then throw a "SecurityError" DOMException.
+    if (!m_browsing_context)
+        return WebIDL::SecurityError::create(realm, "Document.domain setter requires a browsing context"_string);
+
+    // 2. If this's active sandboxing flag set has its sandboxed document.domain browsing context flag set, then throw a "SecurityError" DOMException.
+    if (has_flag(active_sandboxing_flag_set(), HTML::SandboxingFlagSet::SandboxedDocumentDomain))
+        return WebIDL::SecurityError::create(realm, "Document.domain setter is sandboxed"_string);
+
+    // 3. Let effectiveDomain be this's origin's effective domain.
+    auto effective_domain = origin().effective_domain();
+
+    // 4. If effectiveDomain is null, then throw a "SecurityError" DOMException.
+    if (!effective_domain.has_value())
+        return WebIDL::SecurityError::create(realm, "Document.domain setter called on a Document with a null effective domain"_string);
+
+    // 5. If the given value is not a registrable domain suffix of and is not equal to effectiveDomain, then throw a "SecurityError" DOMException.
+    if (!is_a_registrable_domain_suffix_of_or_is_equal_to(domain, effective_domain.value()))
+        return WebIDL::SecurityError::create(realm, "Document.domain setter called for an invalid domain"_string);
+
+    // FIXME: 6. If the surrounding agent's agent cluster's is origin-keyed is true, then return.
+
+    // FIXME: 7. Set this's origin's domain to the result of parsing the given value.
+
     dbgln("(STUBBED) Document::set_domain(domain='{}')", domain);
+    return {};
 }
 
 void Document::set_navigation_id(Optional<String> navigation_id)
@@ -4239,7 +4247,7 @@ GC::Ptr<HTML::HTMLParser> Document::active_parser()
     return m_parser;
 }
 
-void Document::set_browsing_context(HTML::BrowsingContext* browsing_context)
+void Document::set_browsing_context(GC::Ptr<HTML::BrowsingContext> browsing_context)
 {
     m_browsing_context = browsing_context;
 }
@@ -4416,9 +4424,6 @@ void Document::did_stop_being_active_document_in_navigable()
     notify_each_document_observer([&](auto const& document_observer) {
         return document_observer.document_became_inactive();
     });
-
-    if (m_animation_driver_timer)
-        m_animation_driver_timer->stop();
 }
 
 void Document::increment_throw_on_dynamic_markup_insertion_counter(Badge<HTML::HTMLParser>)
@@ -4447,7 +4452,7 @@ GC::Ref<DOM::Document> Document::appropriate_template_contents_owner_document()
             if (document_type() == Type::HTML)
                 new_document->set_document_type(Type::HTML);
 
-            // 3. Let doc's associated inert template document be new doc.
+            // 3. Set doc's associated inert template document to new doc.
             m_associated_inert_template_document = new_document;
         }
         // 2. Set doc to doc's associated inert template document.
@@ -4479,8 +4484,8 @@ String Document::dump_accessibility_tree_as_json()
 // https://dom.spec.whatwg.org/#dom-document-createattribute
 WebIDL::ExceptionOr<GC::Ref<Attr>> Document::create_attribute(String const& local_name)
 {
-    // 1. If localName does not match the Name production in XML, then throw an "InvalidCharacterError" DOMException.
-    if (!is_valid_name(local_name))
+    // 1. If localName is not a valid attribute local name, then throw an "InvalidCharacterError" DOMException.
+    if (!is_valid_attribute_local_name(local_name))
         return WebIDL::InvalidCharacterError::create(realm(), "Invalid character in attribute name."_string);
 
     // 2. If this is an HTML document, then set localName to localName in ASCII lowercase.
@@ -4491,11 +4496,10 @@ WebIDL::ExceptionOr<GC::Ref<Attr>> Document::create_attribute(String const& loca
 // https://dom.spec.whatwg.org/#dom-document-createattributens
 WebIDL::ExceptionOr<GC::Ref<Attr>> Document::create_attribute_ns(Optional<FlyString> const& namespace_, String const& qualified_name)
 {
-    // 1. Let namespace, prefix, and localName be the result of passing namespace and qualifiedName to validate and extract.
-    auto extracted_qualified_name = TRY(validate_and_extract(realm(), namespace_, qualified_name));
+    // 1. Let (namespace, prefix, localName) be the result of validating and extracting namespace and qualifiedName given "attribute".
+    auto extracted_qualified_name = TRY(validate_and_extract(realm(), namespace_, qualified_name, ValidationContext::Attribute));
 
     // 2. Return a new attribute whose namespace is namespace, namespace prefix is prefix, local name is localName, and node document is this.
-
     return Attr::create(*this, extracted_qualified_name);
 }
 
@@ -4899,7 +4903,7 @@ void Document::shared_declarative_refresh_steps(StringView input, GC::Ptr<HTML::
     // 4. Let time be 0.
     u32 time = 0;
 
-    // 5. Collect a sequence of code points that are ASCII digits from input given position, and let the result be timeString.
+    // 5. Collect a sequence of code points that are ASCII digits from input given position, and let timeString be the result.
     auto time_string = lexer.consume_while(is_ascii_digit);
 
     // 6. If timeString is the empty string, then:
@@ -4995,9 +4999,8 @@ void Document::shared_declarative_refresh_steps(StringView input, GC::Ptr<HTML::
     }
 
     parse:
-        // 11. Parse: Parse urlString relative to document. If that fails, return. Otherwise, set urlRecord to the
-        //     resulting URL record.
-        auto maybe_url_record = parse_url(url_string);
+        // 11. Set urlRecord to the result of encoding-parsing a URL given urlString, relative to document.
+        auto maybe_url_record = encoding_parse_url(url_string);
         if (!maybe_url_record.has_value())
             return;
 
@@ -5612,11 +5615,10 @@ GC::RootVector<GC::Ref<Element>> Document::elements_from_point(double x, double 
     // 3. For each box in the viewport, in paint order, starting with the topmost box, that would be a target for
     //    hit testing at coordinates x,y even if nothing would be overlapping it, when applying the transforms that
     //    apply to the descendants of the viewport, append the associated element to sequence.
-    if (auto const* paintable_box = this->paintable_box(); paintable_box) {
+    if (auto const* paintable_box = this->paintable_box()) {
         (void)paintable_box->hit_test(position, Painting::HitTestType::Exact, [&](Painting::HitTestResult result) {
-            auto* dom_node = result.dom_node();
-            if (dom_node && dom_node->is_element() && result.paintable->visible_for_hit_testing())
-                sequence.append(*static_cast<Element*>(dom_node));
+            if (auto* element = as_if<Element>(result.dom_node()))
+                sequence.append(*element);
             return TraversalDecision::Continue;
         });
     }
@@ -6148,7 +6150,7 @@ void Document::set_needs_to_refresh_scroll_state(bool b)
         paintable->set_needs_to_refresh_scroll_state(b);
 }
 
-Vector<GC::Root<DOM::Range>> Document::find_matching_text(String const& query, CaseSensitivity case_sensitivity)
+Vector<GC::Root<Range>> Document::find_matching_text(String const& query, CaseSensitivity case_sensitivity)
 {
     // Ensure the layout tree exists before searching for text matches.
     update_layout(UpdateLayoutReason::DocumentFindMatchingText);
@@ -6160,16 +6162,18 @@ Vector<GC::Root<DOM::Range>> Document::find_matching_text(String const& query, C
     if (text_blocks.is_empty())
         return {};
 
-    Vector<GC::Root<DOM::Range>> matches;
+    auto utf16_query = Utf16String::from_utf8(query);
+
+    Vector<GC::Root<Range>> matches;
     for (auto const& text_block : text_blocks) {
         size_t offset = 0;
         size_t i = 0;
-        auto const& text = text_block.text;
-        auto* match_start_position = &text_block.positions[0];
+        Utf16View text_view { text_block.text };
+        auto* match_start_position = text_block.positions.data();
         while (true) {
             auto match_index = case_sensitivity == CaseSensitivity::CaseInsensitive
-                ? text.find_byte_offset_ignoring_case(query, offset)
-                : text.find_byte_offset(query, offset);
+                ? text_view.find_code_unit_offset_ignoring_case(utf16_query, offset)
+                : text_view.find_code_unit_offset(utf16_query, offset);
             if (!match_index.has_value())
                 break;
 
@@ -6180,16 +6184,16 @@ Vector<GC::Root<DOM::Range>> Document::find_matching_text(String const& query, C
             auto& start_dom_node = match_start_position->dom_node;
 
             auto* match_end_position = match_start_position;
-            for (; i < text_block.positions.size() - 1 && (match_index.value() + query.bytes_as_string_view().length() > text_block.positions[i + 1].start_offset); ++i)
+            for (; i < text_block.positions.size() - 1 && (match_index.value() + utf16_query.length_in_code_units() > text_block.positions[i + 1].start_offset); ++i)
                 match_end_position = &text_block.positions[i + 1];
 
             auto& end_dom_node = match_end_position->dom_node;
-            auto end_position = match_index.value() + query.bytes_as_string_view().length() - match_end_position->start_offset;
+            auto end_position = match_index.value() + utf16_query.length_in_code_units() - match_end_position->start_offset;
 
             matches.append(Range::create(start_dom_node, start_position, end_dom_node, end_position));
             match_start_position = match_end_position;
-            offset = match_index.value() + query.bytes_as_string_view().length() + 1;
-            if (offset >= text.bytes_as_string_view().length())
+            offset = match_index.value() + utf16_query.length_in_code_units() + 1;
+            if (offset >= text_view.length_in_code_units())
                 break;
         }
     }
@@ -6279,6 +6283,10 @@ GC::Ref<Document> Document::parse_html_unsafe(JS::VM& vm, StringView html)
 
     // 4. Parse HTML from a string given document and compliantHTML. // FIXME: Use compliantHTML.
     document->parse_html_from_a_string(html);
+
+    // AD-HOC: Setting the origin to match that of the associated document matches the behavior of existing browsers.
+    auto& associated_document = as<HTML::Window>(realm.global_object()).associated_document();
+    document->set_origin(associated_document.origin());
 
     // 5. Return document.
     return document;
@@ -6393,7 +6401,7 @@ void Document::invalidate_display_list()
     }
 }
 
-RefPtr<Painting::DisplayList> Document::record_display_list(PaintConfig config)
+RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig config)
 {
     if (m_cached_display_list && m_cached_display_list_paint_config == config) {
         return m_cached_display_list;
@@ -6443,7 +6451,6 @@ RefPtr<Painting::DisplayList> Document::record_display_list(PaintConfig config)
     context.set_device_viewport_rect(viewport_rect);
     context.set_should_show_line_box_borders(config.should_show_line_box_borders);
     context.set_should_paint_overlay(config.paint_overlay);
-    context.set_has_focus(config.has_focus);
 
     update_paint_and_hit_testing_properties_if_needed();
 
@@ -6564,6 +6571,35 @@ ElementByIdMap& Document::element_by_id() const
     if (!m_element_by_id)
         m_element_by_id = make<ElementByIdMap>();
     return *m_element_by_id;
+}
+
+String Document::dump_display_list()
+{
+    update_layout(UpdateLayoutReason::DumpDisplayList);
+    auto display_list = record_display_list(HTML::PaintConfig {});
+    if (!display_list)
+        return {};
+    return display_list->dump();
+}
+
+HashMap<FlyString, GC::Ref<Web::CSS::CSSPropertyRule>>& Document::registered_custom_properties()
+{
+    return m_registered_custom_properties;
+}
+
+NonnullRefPtr<CSS::CSSStyleValue const> Document::custom_property_initial_value(FlyString const& name) const
+{
+    auto maybe_custom_property = m_registered_custom_properties.get(name);
+    if (maybe_custom_property.has_value()) {
+        auto parsed_value = maybe_custom_property.value()->initial_style_value();
+        if (!parsed_value)
+            return CSS::GuaranteedInvalidStyleValue::create();
+        return parsed_value.release_nonnull();
+    }
+
+    // For non-registered properties, the initial value is the guaranteed-invalid value.
+    // See: https://drafts.csswg.org/css-variables/#propdef-
+    return CSS::GuaranteedInvalidStyleValue::create();
 }
 
 GC::Ptr<Element> ElementByIdMap::get(FlyString const& element_id) const

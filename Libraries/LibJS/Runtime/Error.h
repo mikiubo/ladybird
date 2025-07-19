@@ -14,7 +14,7 @@
 
 namespace JS {
 
-struct TracebackFrame {
+struct JS_API TracebackFrame {
     FlyString function_name;
     [[nodiscard]] SourceRange const& source_range() const;
 
@@ -26,7 +26,7 @@ enum CompactTraceback {
     Yes,
 };
 
-class Error : public Object {
+class JS_API Error : public Object {
     JS_OBJECT(Error, Object);
     GC_DECLARE_ALLOCATOR(Error);
 
@@ -40,6 +40,8 @@ public:
     [[nodiscard]] String stack_string(CompactTraceback compact = CompactTraceback::No) const;
 
     ThrowCompletionOr<void> install_error_cause(Value options);
+
+    void set_message(String);
 
     Vector<TracebackFrame, 32> const& traceback() const { return m_traceback; }
 
@@ -60,7 +62,7 @@ inline bool Object::fast_is<Error>() const { return is_error_object(); }
 //       our way of implementing the [[ErrorData]] internal slot, which is
 //       used in Object.prototype.toString().
 #define DECLARE_NATIVE_ERROR(ClassName, snake_name, PrototypeName, ConstructorName) \
-    class ClassName final : public Error {                                          \
+    class JS_API ClassName final : public Error {                                   \
         JS_OBJECT(ClassName, Error);                                                \
         GC_DECLARE_ALLOCATOR(ClassName);                                            \
                                                                                     \

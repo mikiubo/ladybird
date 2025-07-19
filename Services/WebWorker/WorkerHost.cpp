@@ -36,7 +36,7 @@ WorkerHost::WorkerHost(URL::URL url, Web::Bindings::WorkerType type, String name
 WorkerHost::~WorkerHost() = default;
 
 // https://html.spec.whatwg.org/multipage/workers.html#run-a-worker
-void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataHolder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject const& outside_settings_snapshot, Web::Bindings::RequestCredentials credentials, bool is_shared)
+void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject const& outside_settings_snapshot, Web::Bindings::RequestCredentials credentials, bool is_shared)
 {
     // 3. Let unsafeWorkerCreationTime be the unsafe shared current time.
     auto unsafe_worker_creation_time = Web::HighResolutionTime::unsafe_shared_current_time();
@@ -95,7 +95,7 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataHolder mess
     auto destination = is_shared ? Web::Fetch::Infrastructure::Request::Destination::SharedWorker
                                  : Web::Fetch::Infrastructure::Request::Destination::Worker;
 
-    // In both cases, let performFetch be the following perform the fetch hook given request, isTopLevel and processCustomFetchResponse:
+    // In both cases, let performFetch be the following perform the fetch hook given request, isTopLevel, and processCustomFetchResponse:
     auto perform_fetch_function = [inside_settings, worker_global_scope, is_shared](GC::Ref<Web::Fetch::Infrastructure::Request> request, Web::HTML::TopLevelModule is_top_level, Web::Fetch::Infrastructure::FetchAlgorithms::ProcessResponseConsumeBodyFunction process_custom_fetch_response) -> Web::WebIDL::ExceptionOr<void> {
         auto& realm = inside_settings->realm();
         auto& vm = realm.vm();
@@ -157,6 +157,7 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataHolder mess
 
     auto on_complete_function = [inside_settings, worker_global_scope, message_port_data = move(message_port_data), url = m_url, is_shared](GC::Ptr<Web::HTML::Script> script) mutable {
         auto& realm = inside_settings->realm();
+
         // 1. If script is null or if script's error to rethrow is non-null, then:
         if (!script || !script->error_to_rethrow().is_null()) {
             // FIXME: 1. Queue a global task on the DOM manipulation task source given worker's relevant global object to fire an event named error at worker.
@@ -180,7 +181,8 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataHolder mess
         worker_global_scope->set_internal_port(inside_port);
 
         // 5. Entangle outside port and inside port.
-        MUST(inside_port->transfer_receiving_steps(message_port_data));
+        Web::HTML::TransferDataDecoder decoder { move(message_port_data) };
+        MUST(inside_port->transfer_receiving_steps(decoder));
 
         // 6. Create a new WorkerLocation object and associate it with worker global scope.
         worker_global_scope->set_location(realm.create<Web::HTML::WorkerLocation>(*worker_global_scope));
@@ -208,10 +210,10 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataHolder mess
 
         // 12. If is shared is false, enable the port message queue of the worker's implicit port.
         if (!is_shared) {
-            inside_port->start();
+            inside_port->enable();
         }
 
-        // 13. If is shared is true, then queue a global task on DOM manipulation task source given worker
+        // 13. If is shared is true, then queue a global task on the DOM manipulation task source given worker
         //     global scope to fire an event named connect at worker global scope, using MessageEvent,
         //     with the data attribute initialized to the empty string, the ports attribute initialized
         //     to a new frozen array containing inside port, and the source attribute initialized to inside port.

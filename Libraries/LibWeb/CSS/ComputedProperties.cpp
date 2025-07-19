@@ -226,7 +226,7 @@ Color ComputedProperties::color_or_fallback(PropertyID id, Layout::NodeWithStyle
     auto const& value = property(id);
     if (!value.has_color())
         return fallback;
-    return value.to_color(node);
+    return value.to_color(node, { .length_resolution_context = Length::ResolutionContext::for_layout_node(node) }).value();
 }
 
 // https://drafts.csswg.org/css-color-adjust-1/#determine-the-used-color-scheme
@@ -309,7 +309,7 @@ CSSPixels ComputedProperties::compute_line_height(CSSPixelRect const& viewport_r
             .length_resolution_context = Length::ResolutionContext { viewport_rect, font_metrics, root_font_metrics },
         };
         if (line_height.as_calculated().resolves_to_number()) {
-            auto resolved = line_height.as_calculated().resolve_number(context);
+            auto resolved = line_height.as_calculated().resolve_number_deprecated(context);
             if (!resolved.has_value()) {
                 dbgln("FIXME: Failed to resolve calc() line-height (number): {}", line_height.as_calculated().to_string(SerializationMode::Normal));
                 return CSSPixels::nearest_value_for(m_font_list->first().pixel_metrics().line_spacing());
@@ -317,7 +317,7 @@ CSSPixels ComputedProperties::compute_line_height(CSSPixelRect const& viewport_r
             return Length(resolved.value(), Length::Type::Em).to_px(viewport_rect, font_metrics, root_font_metrics);
         }
 
-        auto resolved = line_height.as_calculated().resolve_length(context);
+        auto resolved = line_height.as_calculated().resolve_length_deprecated(context);
         if (!resolved.has_value()) {
             dbgln("FIXME: Failed to resolve calc() line-height: {}", line_height.as_calculated().to_string(SerializationMode::Normal));
             return CSSPixels::nearest_value_for(m_font_list->first().pixel_metrics().line_spacing());
@@ -347,7 +347,7 @@ Optional<int> ComputedProperties::z_index() const
         return clamp(value.as_integer().integer());
     }
     if (value.is_calculated()) {
-        auto maybe_double = value.as_calculated().resolve_number({});
+        auto maybe_double = value.as_calculated().resolve_number_deprecated({});
         if (maybe_double.has_value()) {
             return clamp(maybe_double.value());
         }
@@ -365,20 +365,18 @@ float ComputedProperties::resolve_opacity_value(CSSStyleValue const& value)
         auto const& calculated = value.as_calculated();
         CalculationResolutionContext context {};
         if (calculated.resolves_to_percentage()) {
-            auto maybe_percentage = value.as_calculated().resolve_percentage(context);
+            auto maybe_percentage = value.as_calculated().resolve_percentage_deprecated(context);
             if (maybe_percentage.has_value())
                 unclamped_opacity = maybe_percentage->as_fraction();
             else
                 dbgln("Unable to resolve calc() as opacity (percentage): {}", value.to_string(SerializationMode::Normal));
         } else if (calculated.resolves_to_number()) {
-            auto maybe_number = value.as_calculated().resolve_number(context);
+            auto maybe_number = value.as_calculated().resolve_number_deprecated(context);
             if (maybe_number.has_value())
                 unclamped_opacity = maybe_number.value();
             else
                 dbgln("Unable to resolve calc() as opacity (number): {}", value.to_string(SerializationMode::Normal));
         }
-    } else if (value.is_percentage()) {
-        unclamped_opacity = value.as_percentage().percentage().as_fraction();
     }
 
     return clamp(unclamped_opacity, 0.0f, 1.0f);
@@ -445,6 +443,22 @@ ClipRule ComputedProperties::clip_rule() const
     return keyword_to_fill_rule(value.to_keyword()).release_value();
 }
 
+Color ComputedProperties::flood_color(Layout::NodeWithStyle const& node) const
+{
+    auto const& value = property(PropertyID::FloodColor);
+    if (value.has_color()) {
+        return value.to_color(node, { .length_resolution_context = Length::ResolutionContext::for_layout_node(node) }).value();
+    }
+
+    return InitialValues::flood_color();
+}
+
+float ComputedProperties::flood_opacity() const
+{
+    auto const& value = property(PropertyID::FloodOpacity);
+    return resolve_opacity_value(value);
+}
+
 FlexDirection ComputedProperties::flex_direction() const
 {
     auto const& value = property(PropertyID::FlexDirection);
@@ -503,7 +517,7 @@ Length ComputedProperties::border_spacing_horizontal(Layout::Node const& layout_
         if (style_value.is_length())
             return style_value.as_length().length();
         if (style_value.is_calculated())
-            return style_value.as_calculated().resolve_length({ .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value_or(Length(0, Length::Type::Px));
+            return style_value.as_calculated().resolve_length_deprecated({ .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value_or(Length(0, Length::Type::Px));
         return {};
     };
 
@@ -525,7 +539,7 @@ Length ComputedProperties::border_spacing_vertical(Layout::Node const& layout_no
         if (style_value.is_length())
             return style_value.as_length().length();
         if (style_value.is_calculated())
-            return style_value.as_calculated().resolve_length({ .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value_or(Length(0, Length::Type::Px));
+            return style_value.as_calculated().resolve_length_deprecated({ .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value_or(Length(0, Length::Type::Px));
         return {};
     };
 
@@ -640,23 +654,39 @@ TransformBox ComputedProperties::transform_box() const
 
 TransformOrigin ComputedProperties::transform_origin() const
 {
+    auto length_percentage_with_keywords_resolved = [](CSSStyleValue const& value) -> Optional<LengthPercentage> {
+        if (value.is_keyword()) {
+            auto keyword = value.to_keyword();
+            if (keyword == Keyword::Left || keyword == Keyword::Top)
+                return Percentage(0);
+            if (keyword == Keyword::Center)
+                return Percentage(50);
+            if (keyword == Keyword::Right || keyword == Keyword::Bottom)
+                return Percentage(100);
+
+            VERIFY_NOT_REACHED();
+        }
+        return length_percentage_for_style_value(value);
+    };
+
     auto const& value = property(PropertyID::TransformOrigin);
-    if (!value.is_value_list() || value.as_value_list().size() != 2)
+    if (!value.is_value_list() || value.as_value_list().size() != 3)
         return {};
     auto const& list = value.as_value_list();
-    auto x_value = length_percentage_for_style_value(list.values()[0]);
-    auto y_value = length_percentage_for_style_value(list.values()[1]);
-    if (!x_value.has_value() || !y_value.has_value()) {
+
+    auto x_value = length_percentage_with_keywords_resolved(list.values()[0]);
+    auto y_value = length_percentage_with_keywords_resolved(list.values()[1]);
+    auto z_value = length_percentage_for_style_value(list.values()[2]);
+    if (!x_value.has_value() || !y_value.has_value() || !z_value.has_value())
         return {};
-    }
-    return { x_value.value(), y_value.value() };
+    return { x_value.value(), y_value.value(), z_value.value() };
 }
 
 Optional<Color> ComputedProperties::accent_color(Layout::NodeWithStyle const& node) const
 {
     auto const& value = property(PropertyID::AccentColor);
     if (value.has_color())
-        return value.to_color(node);
+        return value.to_color(node, { .length_resolution_context = Length::ResolutionContext::for_layout_node(node) });
     return {};
 }
 
@@ -776,6 +806,12 @@ TextOverflow ComputedProperties::text_overflow() const
 {
     auto const& value = property(PropertyID::TextOverflow);
     return keyword_to_text_overflow(value.to_keyword()).release_value();
+}
+
+TextRendering ComputedProperties::text_rendering() const
+{
+    auto const& value = property(PropertyID::TextRendering);
+    return keyword_to_text_rendering(value.to_keyword()).release_value();
 }
 
 PointerEvents ComputedProperties::pointer_events() const
@@ -904,7 +940,7 @@ Color ComputedProperties::caret_color(Layout::NodeWithStyle const& node) const
         return node.computed_values().color();
 
     if (value.has_color())
-        return value.to_color(node);
+        return value.to_color(node, { .length_resolution_context = Length::ResolutionContext::for_layout_node(node) }).value();
 
     return InitialValues::caret_color();
 }
@@ -921,7 +957,7 @@ ColumnSpan ComputedProperties::column_span() const
     return keyword_to_column_span(value.to_keyword()).release_value();
 }
 
-ComputedProperties::ContentDataAndQuoteNestingLevel ComputedProperties::content(DOM::Element& element, u32 initial_quote_nesting_level) const
+ComputedProperties::ContentDataAndQuoteNestingLevel ComputedProperties::content(DOM::AbstractElement& element_reference, u32 initial_quote_nesting_level) const
 {
     auto const& value = property(PropertyID::Content);
     auto quotes_data = quotes();
@@ -985,7 +1021,7 @@ ComputedProperties::ContentDataAndQuoteNestingLevel ComputedProperties::content(
                     break;
                 }
             } else if (item->is_counter()) {
-                builder.append(item->as_counter().resolve(element));
+                builder.append(item->as_counter().resolve(element_reference));
             } else {
                 // TODO: Implement images, and other things.
                 dbgln("`{}` is not supported in `content` (yet?)", item->to_string(SerializationMode::Normal));
@@ -1000,7 +1036,7 @@ ComputedProperties::ContentDataAndQuoteNestingLevel ComputedProperties::content(
                 if (item->is_string()) {
                     alt_text_builder.append(item->as_string().string_value());
                 } else if (item->is_counter()) {
-                    alt_text_builder.append(item->as_counter().resolve(element));
+                    alt_text_builder.append(item->as_counter().resolve(element_reference));
                 } else {
                     dbgln("`{}` is not supported in `content` alt-text (yet?)", item->to_string(SerializationMode::Normal));
                 }
@@ -1041,16 +1077,16 @@ Vector<CursorData> ComputedProperties::cursor() const
                 continue;
             }
 
-            if (auto keyword = keyword_to_cursor(item->to_keyword()); keyword.has_value())
+            if (auto keyword = keyword_to_cursor_predefined(item->to_keyword()); keyword.has_value())
                 cursors.append(keyword.release_value());
         }
     } else if (value.is_keyword()) {
-        if (auto keyword = keyword_to_cursor(value.to_keyword()); keyword.has_value())
+        if (auto keyword = keyword_to_cursor_predefined(value.to_keyword()); keyword.has_value())
             cursors.append(keyword.release_value());
     }
 
     if (cursors.is_empty())
-        cursors.append(Cursor::Auto);
+        cursors.append(CursorPredefined::Auto);
 
     return cursors;
 }
@@ -1145,7 +1181,7 @@ Vector<ShadowData> ComputedProperties::shadow(PropertyID property_id, Layout::No
         if (value->is_length())
             return value->as_length().length();
         if (value->is_calculated())
-            return value->as_calculated().resolve_length({ .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) });
+            return value->as_calculated().resolve_length_deprecated({ .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) });
         return {};
     };
 
@@ -1167,7 +1203,7 @@ Vector<ShadowData> ComputedProperties::shadow(PropertyID property_id, Layout::No
             maybe_offset_y.release_value(),
             maybe_blur_radius.release_value(),
             maybe_spread_distance.release_value(),
-            value.color()->to_color(as<Layout::NodeWithStyle>(layout_node)),
+            value.color()->to_color(as<Layout::NodeWithStyle>(layout_node), { .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value(),
             value.placement()
         };
     };
@@ -1236,6 +1272,12 @@ Variant<VerticalAlign, LengthPercentage> ComputedProperties::vertical_align() co
         return LengthPercentage { value.as_calculated() };
 
     VERIFY_NOT_REACHED();
+}
+
+FontKerning ComputedProperties::font_kerning() const
+{
+    auto const& value = property(PropertyID::FontKerning);
+    return keyword_to_font_kerning(value.to_keyword()).release_value();
 }
 
 Optional<FlyString> ComputedProperties::font_language_override() const
@@ -1561,6 +1603,12 @@ BorderCollapse ComputedProperties::border_collapse() const
     return keyword_to_border_collapse(value.to_keyword()).release_value();
 }
 
+EmptyCells ComputedProperties::empty_cells() const
+{
+    auto const& value = property(PropertyID::EmptyCells);
+    return keyword_to_empty_cells(value.to_keyword()).release_value();
+}
+
 Vector<Vector<String>> ComputedProperties::grid_template_areas() const
 {
     auto const& value = property(PropertyID::GridTemplateAreas);
@@ -1775,9 +1823,10 @@ Color ComputedProperties::stop_color() const
             value = property(PropertyID::Color);
     }
     if (value->has_color()) {
-        // FIXME: This is used by the SVGStopElement, which does not participate in layout,
-        // so can't pass a layout node (so can't resolve some colors, e.g. palette ones)
-        return value->to_color({});
+        // FIXME: This is used by the SVGStopElement, which does not participate in layout, so we can't pass a layout
+        //        node or CalculationResolutionContext. This means we don't support all valid colors (e.g. palette
+        //        colors, calculated values which depend on length resolution, etc)
+        return value->to_color({}, {}).value_or(Color::Black);
     }
     return Color::Black;
 }
@@ -1834,7 +1883,7 @@ Vector<CounterData> ComputedProperties::counter_data(PropertyID property_id) con
                 if (counter.value->is_integer()) {
                     data.value = AK::clamp_to<i32>(counter.value->as_integer().integer());
                 } else if (counter.value->is_calculated()) {
-                    auto maybe_int = counter.value->as_calculated().resolve_integer({});
+                    auto maybe_int = counter.value->as_calculated().resolve_integer_deprecated({});
                     if (maybe_int.has_value())
                         data.value = AK::clamp_to<i32>(*maybe_int);
                 } else {
@@ -1861,8 +1910,8 @@ ScrollbarColorData ComputedProperties::scrollbar_color(Layout::NodeWithStyle con
 
     if (value.is_scrollbar_color()) {
         auto& scrollbar_color_value = value.as_scrollbar_color();
-        auto thumb_color = scrollbar_color_value.thumb_color()->to_color(layout_node);
-        auto track_color = scrollbar_color_value.track_color()->to_color(layout_node);
+        auto thumb_color = scrollbar_color_value.thumb_color()->to_color(layout_node, { .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value();
+        auto track_color = scrollbar_color_value.track_color()->to_color(layout_node, { .length_resolution_context = Length::ResolutionContext::for_layout_node(layout_node) }).value();
         return { thumb_color, track_color };
     }
 

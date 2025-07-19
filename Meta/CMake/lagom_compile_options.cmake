@@ -7,8 +7,6 @@ if(NOT MSVC)
     add_cxx_compile_options(-fsigned-char)
     add_cxx_compile_options(-ggnu-pubnames)
 else()
-    # char is signed
-    add_cxx_compile_options(/J)
     # full symbolic debugginng information
     add_cxx_compile_options(/Z7)
 endif()
@@ -77,7 +75,10 @@ if (NOT WIN32 AND NOT APPLE AND NOT ENABLE_FUZZERS)
     else()
         add_link_options(LINKER:-z,defs)
         add_link_options(LINKER:--no-undefined)
-        add_link_options(LINKER:--no-allow-shlib-undefined)
+        # FIXME: Remove this once FreeBSD exports environ from libc
+        if (NOT CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+            add_link_options(LINKER:--no-allow-shlib-undefined)
+        endif()
     endif()
 endif()
 

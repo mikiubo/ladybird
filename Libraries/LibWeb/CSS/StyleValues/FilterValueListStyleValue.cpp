@@ -34,10 +34,10 @@ float FilterOperation::Color::resolved_amount() const
     if (amount.is_calculated()) {
         CalculationResolutionContext context {};
         if (amount.calculated()->resolves_to_number())
-            return amount.calculated()->resolve_number(context).value();
+            return amount.calculated()->resolve_number_deprecated(context).value();
 
         if (amount.calculated()->resolves_to_percentage())
-            return amount.calculated()->resolve_percentage(context)->as_fraction();
+            return amount.calculated()->resolve_percentage_deprecated(context)->as_fraction();
     }
 
     VERIFY_NOT_REACHED();
@@ -98,6 +98,9 @@ String FilterValueListStyleValue::to_string(SerializationMode) const
                     }());
 
                 builder.append(color.amount.to_string());
+            },
+            [&](CSS::URL const& url) {
+                builder.append(url.to_string());
             });
         builder.append(')');
         first = false;

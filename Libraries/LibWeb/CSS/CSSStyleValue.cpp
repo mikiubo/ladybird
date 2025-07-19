@@ -11,11 +11,13 @@
 #include <LibGfx/Font/FontStyleMapping.h>
 #include <LibGfx/Font/FontWeight.h>
 #include <LibWeb/CSS/CSSStyleValue.h>
+#include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleValues/AbstractImageStyleValue.h>
 #include <LibWeb/CSS/StyleValues/AngleStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BackgroundRepeatStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BackgroundSizeStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BasicShapeStyleValue.h>
+#include <LibWeb/CSS/StyleValues/BorderImageSliceStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BorderRadiusStyleValue.h>
 #include <LibWeb/CSS/StyleValues/CSSColorValue.h>
 #include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
@@ -103,6 +105,12 @@ BasicShapeStyleValue const& CSSStyleValue::as_basic_shape() const
 {
     VERIFY(is_basic_shape());
     return static_cast<BasicShapeStyleValue const&>(*this);
+}
+
+BorderImageSliceStyleValue const& CSSStyleValue::as_border_image_slice() const
+{
+    VERIFY(is_border_image_slice());
+    return static_cast<BorderImageSliceStyleValue const&>(*this);
 }
 
 BorderRadiusStyleValue const& CSSStyleValue::as_border_radius() const
@@ -421,6 +429,13 @@ bool CSSStyleValue::has_auto() const
     return is_keyword() && as_keyword().keyword() == Keyword::Auto;
 }
 
+Vector<Parser::ComponentValue> CSSStyleValue::tokenize() const
+{
+    // This is an inefficient way of producing ComponentValues, but it's guaranteed to work for types that round-trip.
+    // FIXME: Implement better versions in the subclasses.
+    return Parser::Parser::create(Parser::ParsingParams {}, to_string(SerializationMode::Normal)).parse_as_list_of_component_values();
+}
+
 int CSSStyleValue::to_font_weight() const
 {
     if (is_keyword()) {
@@ -443,7 +458,7 @@ int CSSStyleValue::to_font_weight() const
         return round_to<int>(as_number().number());
     }
     if (is_calculated()) {
-        auto maybe_weight = as_calculated().resolve_integer({});
+        auto maybe_weight = as_calculated().resolve_integer_deprecated({});
         if (maybe_weight.has_value())
             return maybe_weight.value();
     }

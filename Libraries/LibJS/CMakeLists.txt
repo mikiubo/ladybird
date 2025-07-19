@@ -245,7 +245,6 @@ set(SOURCES
     Runtime/TypedArrayConstructor.cpp
     Runtime/TypedArrayPrototype.cpp
     Runtime/Uint8Array.cpp
-    Runtime/Utf16String.cpp
     Runtime/Value.cpp
     Runtime/VM.cpp
     Runtime/WeakMap.cpp
@@ -267,7 +266,7 @@ set(SOURCES
     Token.cpp
 )
 
-serenity_lib(LibJS js)
+ladybird_lib(LibJS js EXPLICIT_SYMBOL_EXPORT)
 target_link_libraries(LibJS PRIVATE LibCore LibCrypto LibFileSystem LibRegex LibSyntax LibGC)
 
 # Link LibUnicode publicly to ensure ICU data (which is in libicudata.a) is available in any process using LibJS.
@@ -281,9 +280,6 @@ endif()
 if (WIN32)
     # FIXME: Windows on ARM
     target_link_libraries(LibJS PRIVATE clang_rt.builtins-x86_64.lib)
-    # FIXME: This is a hack to get around lld-link error undefined symbol GC::HeapBlockBase::block_size
-    #        LibGC HeapBlock.obj is given directly to LibJS linker
-    target_link_libraries(LibJS PRIVATE $<FILTER:$<TARGET_OBJECTS:LibGC>,INCLUDE,HeapBlock>)
 else()
     # This flag has no effect on Windows
     target_compile_options(LibJS PRIVATE -fno-omit-frame-pointer)

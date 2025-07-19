@@ -208,12 +208,14 @@ void BlockFormattingContext::compute_width(Box const& box, AvailableSpace const&
 
     auto zero_value = CSS::Length::make_px(0);
 
-    auto margin_left = CSS::Length::make_auto();
-    auto margin_right = CSS::Length::make_auto();
+    auto margin_left = computed_values.margin().left().resolved(box, width_of_containing_block);
+    auto margin_right = computed_values.margin().right().resolved(box, width_of_containing_block);
     auto const padding_left = computed_values.padding().left().resolved(box, width_of_containing_block).to_px(box);
     auto const padding_right = computed_values.padding().right().resolved(box, width_of_containing_block).to_px(box);
 
     auto& box_state = m_state.get_mutable(box);
+    box_state.margin_left = margin_left.to_px(box);
+    box_state.margin_right = margin_right.to_px(box);
     box_state.border_left = computed_values.border_left().width;
     box_state.border_right = computed_values.border_right().width;
     box_state.padding_left = padding_left;
@@ -430,13 +432,14 @@ void BlockFormattingContext::compute_width_for_block_level_replaced_element_in_n
         margin_right = zero_value;
 
     auto& box_state = m_state.get_mutable(box);
-    box_state.set_content_width(compute_width_for_replaced_element(box, available_space));
+    auto width = compute_width_for_replaced_element(box, available_space);
     box_state.margin_left = margin_left.to_px(box);
     box_state.margin_right = margin_right.to_px(box);
     box_state.border_left = computed_values.border_left().width;
     box_state.border_right = computed_values.border_right().width;
     box_state.padding_left = padding_left;
     box_state.padding_right = padding_right;
+    box_state.set_content_width(calculate_inner_width(box, available_space.width, CSS::Size::make_px(width)));
 }
 
 void BlockFormattingContext::resolve_used_height_if_not_treated_as_auto(Box const& box, AvailableSpace const& available_space)
@@ -828,9 +831,8 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     compute_inset(box, content_box_rect(block_container_state).size());
 
     // Now that our children are formatted we place the ListItemBox with the left space we remembered.
-    if (is<ListItemBox>(box)) {
+    if (is<ListItemBox>(box))
         layout_list_item_marker(static_cast<ListItemBox const&>(box), left_space_before_children_formatted);
-    }
 
     bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.offset.y() + box_state.content_height() + box_state.margin_box_bottom());
 
@@ -937,9 +939,10 @@ BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floa
             float_side.clear();
     };
 
-    if (computed_values.clear() == CSS::Clear::Left || computed_values.clear() == CSS::Clear::Both)
+    // FIXME: Honor writing-mode, direction and text-orientation.
+    if (first_is_one_of(computed_values.clear(), CSS::Clear::Left, CSS::Clear::Both, CSS::Clear::InlineStart))
         clear_floating_boxes(m_left_floats);
-    if (computed_values.clear() == CSS::Clear::Right || computed_values.clear() == CSS::Clear::Both)
+    if (first_is_one_of(computed_values.clear(), CSS::Clear::Right, CSS::Clear::Both, CSS::Clear::InlineEnd))
         clear_floating_boxes(m_right_floats);
 
     return result;
@@ -1162,9 +1165,10 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     };
 
     // Next, float to the left and/or right
-    if (box.computed_values().float_() == CSS::Float::Left) {
+    // FIXME: Honor writing-mode, direction and text-orientation.
+    if (box.computed_values().float_() == CSS::Float::Left || box.computed_values().float_() == CSS::Float::InlineStart) {
         float_box(FloatSide::Left, m_left_floats);
-    } else if (box.computed_values().float_() == CSS::Float::Right) {
+    } else if (box.computed_values().float_() == CSS::Float::Right || box.computed_values().float_() == CSS::Float::InlineEnd) {
         float_box(FloatSide::Right, m_right_floats);
     }
 
@@ -1187,25 +1191,26 @@ void BlockFormattingContext::ensure_sizes_correct_for_left_offset_calculation(Li
     auto& marker = *list_item_box.marker();
     auto& marker_state = m_state.get_mutable(marker);
 
-    CSSPixels image_width = 0;
-    CSSPixels image_height = 0;
+    // If an image is used, the marker's dimensions are the same as the image.
     if (auto const* list_style_image = marker.list_style_image()) {
-        image_width = list_style_image->natural_width().value_or(0);
-        image_height = list_style_image->natural_height().value_or(0);
+        marker_state.set_content_width(list_style_image->natural_width().value_or(0));
+        marker_state.set_content_height(list_style_image->natural_height().value_or(0));
+        return;
     }
 
-    auto default_marker_width = max(4, marker.first_available_font().pixel_size_rounded_up() - 4);
+    CSSPixels marker_size = marker.relative_size();
+    marker_state.set_content_height(marker_size);
 
-    auto marker_text = marker.text().value_or({});
-    if (marker_text.is_empty()) {
-        marker_state.set_content_width(image_width + default_marker_width);
-    } else {
+    // Text markers use text metrics to determine their width; other markers use square dimensions.
+    auto const& marker_font = marker.first_available_font();
+    auto marker_text = marker.text();
+    if (marker_text.has_value()) {
         // FIXME: Use per-code-point fonts to measure text.
-        auto text_width = marker.first_available_font().width(marker_text.code_points());
-        marker_state.set_content_width(image_width + CSSPixels::nearest_value_for(text_width));
+        auto text_width = marker_font.width(marker_text.value().code_points());
+        marker_state.set_content_width(CSSPixels::nearest_value_for(text_width));
+    } else {
+        marker_state.set_content_width(marker_size);
     }
-
-    marker_state.set_content_height(max(image_height, marker.first_available_font().pixel_size_rounded_up() + 1));
 }
 
 void BlockFormattingContext::layout_list_item_marker(ListItemBox const& list_item_box, CSSPixels const& left_space_before_list_item_elements_formatted)
@@ -1217,20 +1222,27 @@ void BlockFormattingContext::layout_list_item_marker(ListItemBox const& list_ite
     auto& marker_state = m_state.get_mutable(marker);
     auto& list_item_state = m_state.get_mutable(list_item_box);
 
-    auto default_marker_width = max(4, marker.first_available_font().pixel_size_rounded_up() - 4);
-    auto final_marker_width = marker_state.content_width() + default_marker_width;
+    auto marker_text = marker.text();
+
+    // Text markers fit snug against the list item; non-text position themselves at 50% of the font size.
+    CSSPixels marker_distance = 0;
+    if (!marker_text.has_value())
+        marker_distance = CSSPixels::nearest_value_for(.5f * marker.first_available_font().pixel_size());
+
+    auto marker_height = marker_state.content_height();
+    auto marker_width = marker_state.content_width();
 
     if (marker.list_style_position() == CSS::ListStylePosition::Inside) {
-        list_item_state.set_content_x(list_item_state.offset.x() + final_marker_width);
-        list_item_state.set_content_width(list_item_state.content_width() - final_marker_width);
+        list_item_state.set_content_x(list_item_state.offset.x() + marker_width + marker_distance);
+        list_item_state.set_content_width(list_item_state.content_width() - marker_width);
     }
 
-    auto offset_y = max(CSSPixels(0), (marker.computed_values().line_height() - marker_state.content_height()) / 2);
+    auto offset_x = round(left_space_before_list_item_elements_formatted - marker_distance - marker_width);
+    auto offset_y = round(max(CSSPixels(0), (marker.computed_values().line_height() - marker_height) / 2));
+    marker_state.set_content_offset({ offset_x, offset_y });
 
-    marker_state.set_content_offset({ left_space_before_list_item_elements_formatted - final_marker_width, offset_y });
-
-    if (marker_state.content_height() > list_item_state.content_height())
-        list_item_state.set_content_height(marker_state.content_height());
+    if (marker_height > list_item_state.content_height())
+        list_item_state.set_content_height(marker_height);
 }
 
 BlockFormattingContext::SpaceUsedAndContainingMarginForFloats BlockFormattingContext::space_used_and_containing_margin_for_floats(CSSPixels y) const

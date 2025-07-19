@@ -35,7 +35,9 @@ AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(i64, UniqueNodeID, Comparison, Increment, Ca
 namespace Web::Painting {
 
 class BackingStore;
+class DevicePixelConverter;
 class DisplayList;
+class DisplayListPlayerSkia;
 class DisplayListRecorder;
 class SVGGradientPaintStyle;
 using PaintStyle = RefPtr<SVGGradientPaintStyle>;
@@ -81,6 +83,7 @@ enum class ImageSmoothingQuality : u8;
 enum class MediaDecodingType : u8;
 enum class MediaEncodingType : u8;
 enum class MediaKeysRequirement : u8;
+enum class OffscreenRenderingContextId : u8;
 enum class ReadableStreamReaderMode : u8;
 enum class ReferrerPolicy : u8;
 enum class RenderBlockingStatusType : u8;
@@ -129,7 +132,23 @@ struct SerializedPolicy;
 
 namespace Web::ContentSecurityPolicy::Directives {
 
+class ChildSourceDirective;
+class ConnectSourceDirective;
+class DefaultSourceDirective;
 class Directive;
+class FontSourceDirective;
+class FrameSourceDirective;
+class ImageSourceDirective;
+class ManifestSourceDirective;
+class MediaSourceDirective;
+class ObjectSourceDirective;
+class ScriptSourceAttributeDirective;
+class ScriptSourceDirective;
+class ScriptSourceElementDirective;
+class StyleSourceAttributeDirective;
+class StyleSourceDirective;
+class StyleSourceElementDirective;
+class WorkerSourceDirective;
 struct SerializedDirective;
 
 }
@@ -176,8 +195,10 @@ class AngleStyleValue;
 class BackgroundRepeatStyleValue;
 class BackgroundSizeStyleValue;
 class BasicShapeStyleValue;
+class BorderImageSliceStyleValue;
 class BorderRadiusStyleValue;
 class CalculatedStyleValue;
+class CascadedProperties;
 class Clip;
 class ColorMixStyleValue;
 class ColorSchemeStyleValue;
@@ -185,6 +206,7 @@ class ConicGradientStyleValue;
 class ContentStyleValue;
 class CounterDefinitionsStyleValue;
 class CounterStyleValue;
+class CountersSet;
 class CSSAnimation;
 class CSSColorValue;
 class CSSConditionRule;
@@ -239,7 +261,7 @@ class FrequencyOrCalculated;
 class FrequencyPercentage;
 class FrequencyStyleValue;
 class GridAutoFlowStyleValue;
-class GridFitContent;
+class GridLineNames;
 class GridMinMax;
 class GridRepeat;
 class GridSize;
@@ -252,6 +274,7 @@ class GuaranteedInvalidStyleValue;
 class ImageStyleValue;
 class IntegerOrCalculated;
 class IntegerStyleValue;
+class InvalidationSet;
 class Length;
 class LengthBox;
 class LengthOrCalculated;
@@ -315,7 +338,9 @@ enum class MediaFeatureID : u8;
 enum class PropertyID : u16;
 
 struct BackgroundLayerData;
+struct CalculationResolutionContext;
 struct CSSStyleSheetInit;
+struct GridRepeatParams;
 struct StyleSheetIdentifier;
 
 }
@@ -323,13 +348,17 @@ struct StyleSheetIdentifier;
 namespace Web::CSS::Parser {
 
 class ComponentValue;
+class GuardedSubstitutionContexts;
 class Parser;
+class SyntaxNode;
 class Token;
 class Tokenizer;
 
 struct AtRule;
 struct Declaration;
 struct Function;
+struct GuaranteedInvalidValue;
+struct ParsingParams;
 struct QualifiedRule;
 struct SimpleBlock;
 
@@ -339,6 +368,7 @@ namespace Web::DOM {
 
 class AbortController;
 class AbortSignal;
+class AbstractElement;
 class AbstractRange;
 class AccessibilityTreeNode;
 class Attr;
@@ -373,11 +403,13 @@ class NodeList;
 class ParentNode;
 class Position;
 class ProcessingInstruction;
+class PseudoElement;
 class Range;
 class RegisteredObserver;
 class ShadowRoot;
 class StaticNodeList;
 class StaticRange;
+class StyleInvalidator;
 class Text;
 class TreeWalker;
 class XMLDocument;
@@ -457,6 +489,15 @@ class FileList;
 
 }
 
+namespace Web::Geolocation {
+
+class Geolocation;
+class GeolocationCoordinates;
+class GeolocationPosition;
+class GeolocationPositionError;
+
+}
+
 namespace Web::Geometry {
 
 class DOMMatrix;
@@ -491,6 +532,7 @@ class CloseWatcher;
 class CloseWatcherManager;
 class CustomElementDefinition;
 class CustomElementRegistry;
+class CustomStateSet;
 class DataTransfer;
 class DataTransferItem;
 class DataTransferItemList;
@@ -607,6 +649,8 @@ class NavigationHistoryEntry;
 class NavigationObserver;
 class NavigationTransition;
 class Navigator;
+class OffscreenCanvas;
+class OffscreenCanvasRenderingContext2D;
 class PageTransitionEvent;
 class Path2D;
 class Plugin;
@@ -626,10 +670,13 @@ class TextTrack;
 class TextTrackCue;
 class TextTrackCueList;
 class TextTrackList;
+class TextTrackObserver;
 class Timer;
 class TimeRanges;
 class ToggleEvent;
 class TrackEvent;
+class TransferDataDecoder;
+class TransferDataEncoder;
 class TraversableNavigable;
 class UserActivation;
 class ValidityState;
@@ -652,6 +699,7 @@ enum class MediaSeekMode;
 enum class SandboxingFlagSet;
 
 struct Agent;
+struct DeserializedTransferRecord;
 struct EmbedderPolicy;
 struct Environment;
 struct EnvironmentSettingsObject;
@@ -664,10 +712,10 @@ struct ScrollOptions;
 struct ScrollToOptions;
 struct SerializedFormData;
 struct SerializedPolicyContainer;
+struct SerializedTransferRecord;
 struct StructuredSerializeOptions;
 struct SyntheticRealmSettings;
 struct ToggleTaskTracker;
-struct TransferDataHolder;
 
 }
 
@@ -810,6 +858,7 @@ class MediaPaintable;
 class Paintable;
 class PaintableBox;
 class PaintableWithLines;
+class ScrollStateSnapshot;
 class StackingContext;
 class TextPaintable;
 class VideoPaintable;
@@ -917,18 +966,19 @@ struct UnderlyingSource;
 namespace Web::StorageAPI {
 
 class NavigatorStorage;
+class StorageBottle;
+class StorageBucket;
 class StorageManager;
 class StorageShed;
+class StorageShelf;
 
-struct StorageBottle;
-struct StorageBucket;
 struct StorageEndpoint;
-struct StorageShelf;
 
 }
 
 namespace Web::SVG {
 
+class Path;
 class SVGAnimatedEnumeration;
 class SVGAnimatedLength;
 class SVGAnimatedRect;
@@ -938,6 +988,9 @@ class SVGDefsElement;
 class SVGDescElement;
 class SVGElement;
 class SVGEllipseElement;
+class SVGFEBlendElement;
+class SVGFEFloodElement;
+class SVGFEGaussianBlurElement;
 class SVGFilterElement;
 class SVGForeignObjectElement;
 class SVGGeometryElement;

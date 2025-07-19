@@ -12,7 +12,7 @@
 ErrorOr<void> generate_header_file(JsonObject& pseudo_elements_data, Core::File& file);
 ErrorOr<void> generate_implementation_file(JsonObject& pseudo_elements_data, Core::File& file);
 
-ErrorOr<int> serenity_main(Main::Arguments arguments)
+ErrorOr<int> ladybird_main(Main::Arguments arguments)
 {
     StringView generated_header_path;
     StringView generated_implementation_path;
@@ -92,29 +92,13 @@ bool pseudo_element_supports_property(PseudoElement, PropertyID);
 struct PseudoElementMetadata {
     enum class ParameterType {
         None,
+        CompoundSelector,
         PTNameSelector,
     } parameter_type;
     bool is_valid_as_function;
     bool is_valid_as_identifier;
 };
 PseudoElementMetadata pseudo_element_metadata(PseudoElement);
-
-enum class GeneratedPseudoElement : @generated_pseudo_element_underlying_type@ {
-)~~~");
-    pseudo_elements_data.for_each_member([&](auto& name, JsonValue const& value) {
-        auto& pseudo_element = value.as_object();
-        if (!pseudo_element.get_bool("is-generated"sv).value_or(false))
-            return;
-
-        auto member_generator = generator.fork();
-        member_generator.set("name:titlecase", title_casify(name));
-        member_generator.appendln("    @name:titlecase@,");
-    });
-    generator.append(R"~~~(
-};
-
-Optional<GeneratedPseudoElement> to_generated_pseudo_element(PseudoElement);
-PseudoElement to_pseudo_element(GeneratedPseudoElement);
 
 }
 )~~~");
@@ -333,6 +317,11 @@ bool pseudo_element_supports_property(PseudoElement pseudo_element, PropertyID p
                 append_property("border-bottom-style"sv);
                 append_property("border-bottom-width"sv);
                 append_property("border-color"sv);
+                append_property("border-image-outset"sv);
+                append_property("border-image-repeat"sv);
+                append_property("border-image-slice"sv);
+                append_property("border-image-source"sv);
+                append_property("border-image-width"sv);
                 append_property("border-inline-end"sv);
                 append_property("border-inline-end-color"sv);
                 append_property("border-inline-end-style"sv);
@@ -432,9 +421,9 @@ bool pseudo_element_supports_property(PseudoElement pseudo_element, PropertyID p
                 // FIXME: text-spacing
                 // FIXME: text-spacing-trim
                 append_property("text-transform"sv);
-                // FIXME: text-wrap
+                append_property("text-wrap"sv);
                 append_property("text-wrap-mode"sv);
-                // FIXME: text-wrap-style
+                append_property("text-wrap-style"sv);
                 append_property("white-space"sv);
                 append_property("white-space-collapse"sv);
                 append_property("white-space-trim"sv);
@@ -527,6 +516,8 @@ PseudoElementMetadata pseudo_element_metadata(PseudoElement pseudo_element)
             auto const& function_syntax = pseudo_element.get_string("function-syntax"sv).value();
             if (function_syntax == "<pt-name-selector>"sv) {
                 parameter_type = "PTNameSelector"_string;
+            } else if (function_syntax == "<compound-selector>"sv) {
+                parameter_type = "CompoundSelector"_string;
             } else {
                 warnln("Unrecognized pseudo-element parameter type: `{}`", function_syntax);
                 VERIFY_NOT_REACHED();
@@ -561,57 +552,6 @@ PseudoElementMetadata pseudo_element_metadata(PseudoElement pseudo_element)
         };
     case PseudoElement::KnownPseudoElementCount:
         break;
-    }
-    VERIFY_NOT_REACHED();
-}
-
-Optional<GeneratedPseudoElement> to_generated_pseudo_element(PseudoElement pseudo_element)
-{
-    switch (pseudo_element) {
-)~~~");
-
-    pseudo_elements_data.for_each_member([&](auto& name, JsonValue const& value) {
-        auto& pseudo_element = value.as_object();
-        if (pseudo_element.has("alias-for"sv))
-            return;
-        if (!pseudo_element.get_bool("is-generated"sv).value_or(false))
-            return;
-
-        auto member_generator = generator.fork();
-        member_generator.set("name:titlecase", title_casify(name));
-        member_generator.append(R"~~~(
-    case PseudoElement::@name:titlecase@:
-        return GeneratedPseudoElement::@name:titlecase@;
-)~~~");
-    });
-
-    generator.append(R"~~~(
-    default:
-        return {};
-    }
-}
-
-PseudoElement to_pseudo_element(GeneratedPseudoElement generated_pseudo_element)
-{
-    switch (generated_pseudo_element) {
-)~~~");
-
-    pseudo_elements_data.for_each_member([&](auto& name, JsonValue const& value) {
-        auto& pseudo_element = value.as_object();
-        if (pseudo_element.has("alias-for"sv))
-            return;
-        if (!pseudo_element.get_bool("is-generated"sv).value_or(false))
-            return;
-
-        auto member_generator = generator.fork();
-        member_generator.set("name:titlecase", title_casify(name));
-        member_generator.append(R"~~~(
-    case GeneratedPseudoElement::@name:titlecase@:
-        return PseudoElement::@name:titlecase@;
-)~~~");
-    });
-
-    generator.append(R"~~~(
     }
     VERIFY_NOT_REACHED();
 }

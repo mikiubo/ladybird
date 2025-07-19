@@ -44,9 +44,9 @@ public:
 
     WebIDL::ExceptionOr<GC::Ref<DOMPoint>> matrix_transform(DOMMatrixInit&) const;
 
-    virtual StringView interface_name() const override { return "DOMPointReadOnly"sv; }
-    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::SerializationRecord&, bool for_storage, HTML::SerializationMemory&) override;
-    virtual WebIDL::ExceptionOr<void> deserialization_steps(ReadonlySpan<u32> const&, size_t& position, HTML::DeserializationMemory&) override;
+    virtual HTML::SerializeType serialize_type() const override { return HTML::SerializeType::DOMPointReadOnly; }
+    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::TransferDataEncoder&, bool for_storage, HTML::SerializationMemory&) override;
+    virtual WebIDL::ExceptionOr<void> deserialization_steps(HTML::TransferDataDecoder&, HTML::DeserializationMemory&) override;
 
 protected:
     DOMPointReadOnly(JS::Realm&, double x, double y, double z, double w);

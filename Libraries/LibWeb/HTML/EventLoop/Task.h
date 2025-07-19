@@ -35,6 +35,12 @@ public:
         TimerTask,
         JavaScriptEngine,
 
+        // https://w3c.github.io/geolocation/#dfn-geolocation-task-source
+        Geolocation,
+
+        // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#bitmap-task-source
+        BitmapTask,
+
         // https://html.spec.whatwg.org/multipage/webappapis.html#navigation-and-traversal-task-source
         NavigationAndTraversal,
 
@@ -108,6 +114,15 @@ struct UniqueTaskSource {
     ~UniqueTaskSource();
 
     Task::Source const source;
+};
+
+class ParallelQueue : public RefCounted<ParallelQueue> {
+public:
+    static NonnullRefPtr<ParallelQueue> create();
+    TaskID enqueue(GC::Ref<GC::Function<void()>>);
+
+private:
+    UniqueTaskSource m_task_source;
 };
 
 }

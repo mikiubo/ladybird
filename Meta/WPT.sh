@@ -12,9 +12,11 @@ ensure_ladybird_source_dir
 WPT_SOURCE_DIR=${WPT_SOURCE_DIR:-"${LADYBIRD_SOURCE_DIR}/Tests/LibWeb/WPT/wpt"}
 WPT_REPOSITORY_URL=${WPT_REPOSITORY_URL:-"https://github.com/web-platform-tests/wpt.git"}
 
-BUILD_PRESET=${BUILD_PRESET:-default}
+BUILD_PRESET=${BUILD_PRESET:-Release}
 
 BUILD_DIR=$(get_build_dir "$BUILD_PRESET")
+
+TMPDIR=${TMPDIR:-/tmp}
 
 : "${TRY_SHOW_LOGFILES_IN_TMUX:=false}"
 : "${SHOW_LOGFILES:=true}"
@@ -73,18 +75,21 @@ ensure_run_dir() {
 
 LADYBIRD_BINARY=${LADYBIRD_BINARY:-"$(default_binary_path)/Ladybird"}
 WEBDRIVER_BINARY=${WEBDRIVER_BINARY:-"$(default_binary_path)/WebDriver"}
-HEADLESS_BROWSER_BINARY=${HEADLESS_BROWSER_BINARY:-"$(default_binary_path)/headless-browser"}
+TEST_WEB_BINARY=${TEST_WEB_BINARY:-"${BUILD_DIR}/bin/test-web"}
 WPT_PROCESSES=${WPT_PROCESSES:-$(get_number_of_processing_units)}
 WPT_CERTIFICATES=(
     "tools/certs/cacert.pem"
-    "${BUILD_DIR}/Lagom/cacert.pem"
 )
-WPT_ARGS=( "--webdriver-binary=${WEBDRIVER_BINARY}"
+WPT_ARGS=(
+    "--binary=${LADYBIRD_BINARY}"
+    "--webdriver-binary=${WEBDRIVER_BINARY}"
     "--install-webdriver"
     "--webdriver-arg=--force-cpu-painting"
     "--no-pause-after-test"
+    "--install-fonts"
     "${EXTRA_WPT_ARGS[@]}"
 )
+IMPORT_ARGS=()
 WPT_LOG_ARGS=()
 
 ARG0=$0
@@ -104,6 +109,8 @@ print_help() {
                       List the tests in the given PATHS.
       clean:      $NAME clean
                       Clean up the extra resources and directories (if any leftover) created by this script.
+      bisect:     $NAME bisect BAD_COMMIT GOOD_COMMIT [TESTS...]
+                      Find the first commit where a given set of tests produce unexpected results.
 
     Env vars:
       EXTRA_WPT_ARGS:             Extra arguments for the wpt command, placed at the end; array, default empty
@@ -147,6 +154,8 @@ print_help() {
           Run the Web Platform Tests in the 'css/CSS2' directory, comparing the results to the expectations in expectations.log; output the results to results.log.
       $NAME import html/dom/aria-attribute-reflection.html
           Import the test from https://wpt.live/html/dom/aria-attribute-reflection.html into the Ladybird test suite.
+      $NAME import --force html/dom/aria-attribute-reflection.html
+          Import the test from https://wpt.live/html/dom/aria-attribute-reflection.html into the Ladybird test suite, redownloading any files that already exist.
       $NAME list-tests css/CSS2 dom
           Show a list of all tests in the 'css/CSS2' and 'dom' directories.
 EOF
@@ -207,10 +216,7 @@ while [[ "$ARG" =~ ^(--show-window|--debug-process|--parallel-instances|(--log(-
 done
 
 if [ $headless -eq 1 ]; then
-    WPT_ARGS+=( "--binary=${HEADLESS_BROWSER_BINARY}" )
     WPT_ARGS+=( "--webdriver-arg=--headless" )
-else
-    WPT_ARGS+=( "--binary=${LADYBIRD_BINARY}" )
 fi
 
 exit_if_running_as_root "Do not run WPT.sh as root"
@@ -243,7 +249,7 @@ ensure_wpt_repository() {
 }
 
 build_ladybird_and_webdriver() {
-    "${DIR}"/ladybird.py build WebDriver
+    "${LADYBIRD_SOURCE_DIR}"/Meta/ladybird.py build WebDriver
 }
 
 update_wpt() {
@@ -302,8 +308,11 @@ cleanup_run_dirs() {
         rm -fr "${BUILD_DIR}/wpt"
     }
 cleanup_merge_dirs_and_infra() {
-    cleanup_run_dirs
-    cleanup_run_infra
+    # Cleanup is only needed on Linux
+    if [[ $OSTYPE == 'linux'* ]]; then
+        cleanup_run_dirs
+        cleanup_run_infra
+    fi
 }
 trap cleanup_merge_dirs_and_infra EXIT INT TERM
 
@@ -560,6 +569,96 @@ serve_wpt()
     popd > /dev/null
 }
 
+cleanup_bisect()
+{
+    local temp_file_directory="$1"; shift
+    if [ -d "${temp_file_directory}" ]; then
+        echo "Removing temp file directory: ${temp_file_directory}"
+        rm -rf "${temp_file_directory}"
+    fi
+
+    git bisect reset
+}
+
+bisect_wpt()
+{
+    if ! git diff-index --quiet HEAD --; then
+        echo "You have uncommitted changes, please commit or stash them before bisecting."
+        exit 1
+    fi
+
+    local bad="$1"; shift
+    local good="$1"; shift
+    # Commits from before ladybird.py was added don't currently work with this script
+    OLDEST_COMMIT_ALLOWED="061a7f766ce"
+
+    if ! git rev-parse --verify "${bad}" >/dev/null 2>&1; then
+        echo "Bad commit '${bad}' not found."
+        exit 1
+    fi
+
+    if ! git rev-parse --verify "${good}" >/dev/null 2>&1; then
+        echo "Good commit '${good}' not found."
+        exit 1
+    fi
+
+    if ! git merge-base --is-ancestor ${OLDEST_COMMIT_ALLOWED} "${good}"; then
+        echo "Commits older than ${OLDEST_COMMIT_ALLOWED} aren't allowed (because ladybird.py is required)."
+        exit 1
+    fi
+
+    if [ "${good}" = "${bad}" ]; then
+        echo "The good commit and the bad commit must be different."
+        exit 1
+    fi
+
+    if ! git merge-base --is-ancestor "${good}" "${bad}"  ; then
+        echo "The good commit must be older than the bad commit."
+        exit 1
+    fi
+
+    ensure_wpt_repository
+    construct_test_list "${@}"
+
+    pushd "${LADYBIRD_SOURCE_DIR}" > /dev/null
+      local temp_file_directory_base
+      temp_file_directory_base="$(mktemp -p "${TMPDIR}" -d "wpt-bisect-helper-XXXXXX")"
+      mkdir "${temp_file_directory_base}/Meta"
+      local baseline_log_file
+      baseline_log_file="$(mktemp -p "${temp_file_directory_base}" -u "XXXXXX.log")"
+      local current_branch_or_commit
+      current_branch_or_commit="$(git branch --show-current 2> /dev/null)"
+      if [ -z "${current_branch_or_commit}" ]; then
+          current_branch_or_commit="$(git rev-parse HEAD)"
+      fi
+
+      # We create the baseline log file against the bad commit bcause building it may be significantly faster if the
+      # good commit is significantly older than the bad commit.
+      git checkout "${bad}" 2> /dev/null
+      trap 'git checkout "${current_branch_or_commit}" 2> /dev/null' EXIT INT TERM
+      echo "Generating baseline log file at \"${baseline_log_file}\""
+      $0 run --log "${baseline_log_file}" "${@}" || true
+      trap - EXIT INT TERM
+      git checkout "${current_branch_or_commit}" 2> /dev/null
+
+      # We need to copy scripts that will run during bisection to ensure that we will always have the latest version.
+      required_build_files=(
+          "shell_include.sh"
+          "wpt-bisect-helper.sh"
+      )
+      for file in "${required_build_files[@]}"; do
+          cp "${LADYBIRD_SOURCE_DIR}/Meta/${file}" "${temp_file_directory_base}/Meta/${file}"
+      done
+      cp "$0" "${temp_file_directory_base}/Meta/WPT.sh"
+
+      git bisect start "${bad}" "${good}"
+      trap cleanup_bisect INT TERM
+      git bisect run "${temp_file_directory_base}/Meta/wpt-bisect-helper.sh" "${baseline_log_file}" "${@}" || true
+      trap - INT TERM
+      cleanup_bisect "${temp_file_directory_base}"
+    popd > /dev/null
+}
+
 list_tests_wpt()
 {
     ensure_wpt_repository
@@ -573,6 +672,22 @@ list_tests_wpt()
 
 import_wpt()
 {
+    pushd "${WPT_SOURCE_DIR}" > /dev/null
+       if ! git fetch origin > /dev/null; then
+            echo "Failed to fetch the WPT repository, please check your network connection."
+            exit 1
+        fi
+        local local_hash
+        local_hash=$(git rev-parse HEAD)
+        local remote_hash
+        remote_hash=$(git rev-parse origin/master)
+
+        if [ "$local_hash" != "$remote_hash" ]; then
+            echo "WPT repository is not up to date, please run '$0 update' first."
+            exit 1
+        fi
+    popd > /dev/null
+
     for i in "${!INPUT_PATHS[@]}"; do
         item="${INPUT_PATHS[i]}"
         item="${item#http://wpt.live/}"
@@ -597,16 +712,16 @@ import_wpt()
     done < <(printf "%s\n" "${RAW_TESTS[@]}" | sort -u)
 
     pushd "${LADYBIRD_SOURCE_DIR}" > /dev/null
-        ./Meta/ladybird.py build headless-browser
-        set +e
+        ./Meta/ladybird.py build test-web
+        trap 'exit 1' EXIT INT TERM
         for path in "${TESTS[@]}"; do
             echo "Importing test from ${path}"
-            if ! ./Meta/import-wpt-test.py https://wpt.live/"${path}"; then
+            if ! ./Meta/import-wpt-test.py "${IMPORT_ARGS[@]}" https://wpt.live/"${path}"; then
                 continue
             fi
-            "${HEADLESS_BROWSER_BINARY}" --run-tests ./Tests/LibWeb --rebaseline -f "$path"
+            "${TEST_WEB_BINARY}" --rebaseline -f "$path" || true
         done
-        set -e
+        trap - EXIT INT TERM
     popd > /dev/null
 }
 
@@ -622,7 +737,7 @@ compare_wpt() {
     rm -rf "${METADATA_DIR}"
 }
 
-if [[ "$CMD" =~ ^(update|clean|run|serve|compare|import|list-tests)$ ]]; then
+if [[ "$CMD" =~ ^(update|clean|run|serve|bisect|compare|import|list-tests)$ ]]; then
     case "$CMD" in
         update)
             update_wpt
@@ -637,7 +752,27 @@ if [[ "$CMD" =~ ^(update|clean|run|serve|compare|import|list-tests)$ ]]; then
         serve)
             serve_wpt
             ;;
+        bisect)
+          if [ $# -lt 3 ]; then
+              echo "Usage: $0 bisect <bad> <good> [test paths...]"
+              usage
+          fi
+          bisect_wpt "${@}"
+          ;;
         import)
+            while [[ "$1" =~ ^--(force|wpt-base-url)$ ]]; do
+                if [ "$1" = "--wpt-base-url" ]; then
+                    if [ -z "$2" ]; then
+                        echo "Missing argument for --wpt-base-url"
+                        usage
+                    fi
+                    IMPORT_ARGS+=( "--wpt-base-url=$2" )
+                    shift
+                else
+                    IMPORT_ARGS+=( "$1" )
+                fi
+                shift
+            done
             if [ $# -eq 0 ]; then
                 usage
             fi
@@ -646,7 +781,7 @@ if [[ "$CMD" =~ ^(update|clean|run|serve|compare|import|list-tests)$ ]]; then
             ;;
 
         compare)
-            INPUT_LOG_NAME="$(pwd -P)/$1"
+            INPUT_LOG_NAME="$(realpath "$1")"
             if [ ! -f "$INPUT_LOG_NAME" ]; then
                 echo "Log file not found: \"${INPUT_LOG_NAME}\""
                 usage;

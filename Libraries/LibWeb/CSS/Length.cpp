@@ -151,13 +151,21 @@ Length::ResolutionContext Length::ResolutionContext::for_window(HTML::Window con
 
 Length::ResolutionContext Length::ResolutionContext::for_layout_node(Layout::Node const& node)
 {
-    auto const* root_element = node.document().document_element();
-    VERIFY(root_element);
-    VERIFY(root_element->layout_node());
+    Layout::Node const* root_layout_node;
+
+    if (is<DOM::Document>(node.dom_node())) {
+        root_layout_node = &node;
+    } else {
+        auto const* root_element = node.document().document_element();
+        VERIFY(root_element);
+        VERIFY(root_element->layout_node());
+        root_layout_node = root_element->layout_node();
+    }
+
     return Length::ResolutionContext {
         .viewport_rect = node.navigable()->viewport_rect(),
         .font_metrics = { node.computed_values().font_size(), node.first_available_font().pixel_metrics() },
-        .root_font_metrics = { root_element->layout_node()->computed_values().font_size(), root_element->layout_node()->first_available_font().pixel_metrics() },
+        .root_font_metrics = { root_layout_node->computed_values().font_size(), root_layout_node->first_available_font().pixel_metrics() },
     };
 }
 
@@ -415,7 +423,7 @@ Length Length::absolutized(CSSPixelRect const& viewport_rect, FontMetrics const&
 
 Length Length::resolve_calculated(NonnullRefPtr<CalculatedStyleValue const> const& calculated, Layout::Node const& layout_node, Length const& reference_value)
 {
-    return calculated->resolve_length(
+    return calculated->resolve_length_deprecated(
                          {
                              .percentage_basis = reference_value,
                              .length_resolution_context = ResolutionContext::for_layout_node(layout_node),
@@ -425,7 +433,7 @@ Length Length::resolve_calculated(NonnullRefPtr<CalculatedStyleValue const> cons
 
 Length Length::resolve_calculated(NonnullRefPtr<CalculatedStyleValue const> const& calculated, Layout::Node const& layout_node, CSSPixels reference_value)
 {
-    return calculated->resolve_length(
+    return calculated->resolve_length_deprecated(
                          {
                              .percentage_basis = make_px(reference_value),
                              .length_resolution_context = ResolutionContext::for_layout_node(layout_node),

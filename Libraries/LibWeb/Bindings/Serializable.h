@@ -16,12 +16,13 @@ class Serializable {
 public:
     virtual ~Serializable() = default;
 
-    virtual StringView interface_name() const = 0;
+    virtual HTML::SerializeType serialize_type() const = 0;
 
     // https://html.spec.whatwg.org/multipage/structured-data.html#serialization-steps
-    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::SerializationRecord&, bool for_storage, HTML::SerializationMemory&) = 0;
+    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::TransferDataEncoder&, bool for_storage, HTML::SerializationMemory&) = 0;
+
     // https://html.spec.whatwg.org/multipage/structured-data.html#deserialization-steps
-    virtual WebIDL::ExceptionOr<void> deserialization_steps(ReadonlySpan<u32> const&, size_t& position, HTML::DeserializationMemory&) = 0;
+    virtual WebIDL::ExceptionOr<void> deserialization_steps(HTML::TransferDataDecoder&, HTML::DeserializationMemory&) = 0;
 };
 
 }

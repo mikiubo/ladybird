@@ -490,36 +490,6 @@ h6 {
     font-weight: bold;
 }
 
-:is(article, aside, nav, section) h1 {
-    margin-top: 0.83em;
-    margin-bottom: 0.83em;
-    font-size: 1.50em;
-}
-
-:is(article, aside, nav, section) :is(article, aside, nav, section) h1 {
-    margin-top: 1.00em;
-    margin-bottom: 1.00em;
-    font-size: 1.17em;
-}
-
-:is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) h1 {
-    margin-top: 1.33em;
-    margin-bottom: 1.33em;
-    font-size: 1.00em;
-}
-
-:is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) h1 {
-    margin-top: 1.67em;
-    margin-bottom: 1.67em;
-    font-size: 0.83em;
-}
-
-:is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) h1 {
-    margin-top: 2.33em;
-    margin-bottom: 2.33em;
-    font-size: 0.67em;
-}
-
 /* 15.3.7 Lists
  * https://html.spec.whatwg.org/multipage/rendering.html#lists
  */
@@ -629,14 +599,14 @@ td, th {
 th {
     font-weight: bold;
     /*
-    The text-align property for table headings is non-standard, but all
-    existing user-agents seem to render them centered by default.
+    The text-align property for table headings is non-standard, but all existing user-agents seem to render them
+    centered by default. We use -libweb-inherit-or-center to prioritize any inherited text-align style.
 
     See:
     - https://trac.webkit.org/browser/trunk/Source/WebCore/css/html.css?rev=295625#L272
     - https://searchfox.org/mozilla-central/rev/0b55b868c17835942d40ca3fedfca8057481207b/layout/style/res/html.css#473
     */
-    text-align: center;
+    text-align: -libweb-inherit-or-center;
 }
 
 caption {

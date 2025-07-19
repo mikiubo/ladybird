@@ -11,7 +11,7 @@
 #include <LibWeb/Geometry/DOMMatrix.h>
 #include <LibWeb/HTML/Path2D.h>
 #include <LibWeb/SVG/AttributeParser.h>
-#include <LibWeb/SVG/SVGPathElement.h>
+#include <LibWeb/SVG/Path.h>
 
 namespace Web::HTML {
 
@@ -41,7 +41,7 @@ Path2D::Path2D(JS::Realm& realm, Optional<Variant<GC::Root<Path2D>, String>> con
 
     // 4. Let svgPath be the result of parsing and interpreting path according to SVG 2's rules for path data. [SVG]
     auto path_instructions = SVG::AttributeParser::parse_path_data(path->get<String>());
-    auto svg_path = SVG::path_from_path_instructions(path_instructions);
+    auto svg_path = path_instructions.to_gfx_path();
 
     if (!svg_path.is_empty()) {
         // 5. Let (x, y) be the last point in svgPath.
@@ -81,7 +81,7 @@ WebIDL::ExceptionOr<void> Path2D::add_path(GC::Ref<Path2D> path, Geometry::DOMMa
     if (!isfinite(matrix->m11()) || !isfinite(matrix->m12()) || !isfinite(matrix->m21()) || !isfinite(matrix->m22()) || !isfinite(matrix->m41()) || !isfinite(matrix->m42()))
         return {};
 
-    // 4. Create a copy of all the subpaths in path. Let this copy be known as c.
+    // 4. Create a copy of all the subpaths in path. Let c be this copy.
     // 5. Transform all the coordinates and lines in c by the transform matrix matrix.
     auto copy = path->path().copy_transformed(Gfx::AffineTransform { static_cast<float>(matrix->m11()), static_cast<float>(matrix->m12()), static_cast<float>(matrix->m21()), static_cast<float>(matrix->m22()), static_cast<float>(matrix->m41()), static_cast<float>(matrix->m42()) });
 

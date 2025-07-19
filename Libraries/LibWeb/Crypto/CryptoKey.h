@@ -25,7 +25,7 @@ class CryptoKey final
     GC_DECLARE_ALLOCATOR(CryptoKey);
 
 public:
-    using InternalKeyData = Variant<ByteBuffer, Bindings::JsonWebKey, ::Crypto::PK::RSAPublicKey<>, ::Crypto::PK::RSAPrivateKey<>, ::Crypto::PK::ECPublicKey<>, ::Crypto::PK::ECPrivateKey<>>;
+    using InternalKeyData = Variant<ByteBuffer, Bindings::JsonWebKey, ::Crypto::PK::RSAPublicKey, ::Crypto::PK::RSAPrivateKey, ::Crypto::PK::ECPublicKey, ::Crypto::PK::ECPrivateKey>;
 
     [[nodiscard]] static GC::Ref<CryptoKey> create(JS::Realm&, InternalKeyData);
     [[nodiscard]] static GC::Ref<CryptoKey> create(JS::Realm&);
@@ -47,9 +47,9 @@ public:
     InternalKeyData const& handle() const { return m_key_data; }
     String algorithm_name() const;
 
-    virtual StringView interface_name() const override { return "CryptoKey"sv; }
-    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::SerializationRecord& record, bool for_storage, HTML::SerializationMemory&) override;
-    virtual WebIDL::ExceptionOr<void> deserialization_steps(ReadonlySpan<u32> const& record, size_t& position, HTML::DeserializationMemory&) override;
+    virtual HTML::SerializeType serialize_type() const override { return HTML::SerializeType::CryptoKey; }
+    virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::TransferDataEncoder&, bool for_storage, HTML::SerializationMemory&) override;
+    virtual WebIDL::ExceptionOr<void> deserialization_steps(HTML::TransferDataDecoder&, HTML::DeserializationMemory&) override;
 
 private:
     CryptoKey(JS::Realm&, InternalKeyData);

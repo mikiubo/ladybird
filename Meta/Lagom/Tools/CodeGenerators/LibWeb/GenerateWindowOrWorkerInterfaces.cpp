@@ -10,11 +10,21 @@
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
+#include <LibIDL/ExposedTo.h>
 #include <LibIDL/IDLParser.h>
 #include <LibIDL/Types.h>
 #include <LibMain/Main.h>
 
-static ErrorOr<void> add_to_interface_sets(IDL::Interface&, Vector<IDL::Interface&>& intrinsics, Vector<IDL::Interface&>& window_exposed, Vector<IDL::Interface&>& dedicated_worker_exposed, Vector<IDL::Interface&>& shared_worker_exposed, Vector<IDL::Interface&>& shadow_realm_exposed);
+struct InterfaceSets {
+    Vector<IDL::Interface&> intrinsics;
+    Vector<IDL::Interface&> window_exposed;
+    Vector<IDL::Interface&> dedicated_worker_exposed;
+    Vector<IDL::Interface&> shared_worker_exposed;
+    Vector<IDL::Interface&> shadow_realm_exposed;
+    // TODO: service_worker_exposed
+};
+
+static ErrorOr<void> add_to_interface_sets(IDL::Interface&, InterfaceSets& interface_sets);
 static ByteString s_error_string;
 
 struct LegacyConstructor {
@@ -36,7 +46,7 @@ static void consume_whitespace(GenericLexer& lexer)
     }
 }
 
-static Optional<LegacyConstructor> const& lookup_legacy_constructor(IDL::Interface& interface)
+static Optional<LegacyConstructor> const& lookup_legacy_constructor(IDL::Interface const& interface)
 {
     static HashMap<StringView, Optional<LegacyConstructor>> s_legacy_constructors;
     if (auto cache = s_legacy_constructors.get(interface.name); cache.has_value())
@@ -58,7 +68,7 @@ static Optional<LegacyConstructor> const& lookup_legacy_constructor(IDL::Interfa
     return s_legacy_constructors.get(interface.name).value();
 }
 
-static ErrorOr<void> generate_intrinsic_definitions(StringView output_path, Vector<IDL::Interface&>& exposed_interfaces)
+static ErrorOr<void> generate_intrinsic_definitions(StringView output_path, InterfaceSets const& interface_sets)
 {
     StringBuilder builder;
     SourceGenerator generator(builder);
@@ -66,9 +76,13 @@ static ErrorOr<void> generate_intrinsic_definitions(StringView output_path, Vect
     generator.append(R"~~~(
 #include <LibGC/DeferGC.h>
 #include <LibJS/Runtime/Object.h>
-#include <LibWeb/Bindings/Intrinsics.h>)~~~");
+#include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/HTML/Window.h>
+#include <LibWeb/HTML/DedicatedWorkerGlobalScope.h>
+#include <LibWeb/HTML/SharedWorkerGlobalScope.h>
+#include <LibWeb/HTML/ShadowRealmGlobalScope.h>)~~~");
 
-    for (auto& interface : exposed_interfaces) {
+    for (auto& interface : interface_sets.intrinsics) {
         auto gen = generator.fork();
         gen.set("namespace_class", interface.namespace_class);
         gen.set("prototype_class", interface.prototype_class);
@@ -108,7 +122,7 @@ void Intrinsics::create_web_namespace<@namespace_class@>(JS::Realm& realm)
 
     [[maybe_unused]] static constexpr u8 attr = JS::Attribute::Writable | JS::Attribute::Configurable;)~~~");
 
-        for (auto& interface : exposed_interfaces) {
+        for (auto& interface : interface_sets.intrinsics) {
             if (interface.extended_attributes.get("LegacyNamespace"sv) != name)
                 continue;
 
@@ -124,10 +138,76 @@ void Intrinsics::create_web_namespace<@namespace_class@>(JS::Realm& realm)
 )~~~");
     };
 
-    auto add_interface = [](SourceGenerator& gen, StringView name, StringView prototype_class, StringView constructor_class, Optional<LegacyConstructor> const& legacy_constructor, StringView named_properties_class) {
+    auto add_interface = [](SourceGenerator& gen, InterfaceSets const& interface_sets, StringView name, StringView prototype_class, StringView constructor_class, Optional<LegacyConstructor> const& legacy_constructor, StringView named_properties_class) {
         gen.set("interface_name", name);
         gen.set("prototype_class", prototype_class);
         gen.set("constructor_class", constructor_class);
+
+        // https://webidl.spec.whatwg.org/#dfn-exposed
+        // An interface, callback interface, namespace, or member construct is exposed in a given realm realm if the
+        // following steps return true:
+        // FIXME: Make this compatible with the non-interface types.
+        gen.append(R"~~~(
+template<>
+bool Intrinsics::is_interface_exposed<@prototype_class@>(JS::Realm& realm) const
+{
+    [[maybe_unused]] auto& global_object = realm.global_object();
+)~~~");
+
+        // 1. If construct’s exposure set is not *, and realm.[[GlobalObject]] does not implement an interface that is in construct’s exposure set, then return false.
+        auto window_exposed_iterator = interface_sets.window_exposed.find_if([&name](IDL::Interface const& interface) {
+            return interface.name == name;
+        });
+
+        if (window_exposed_iterator != interface_sets.window_exposed.end()) {
+            gen.append(R"~~~(
+    if (is<HTML::Window>(global_object))
+        return true;
+)~~~");
+        }
+
+        auto dedicated_worker_exposed_iterator = interface_sets.dedicated_worker_exposed.find_if([&name](IDL::Interface const& interface) {
+            return interface.name == name;
+        });
+
+        if (dedicated_worker_exposed_iterator != interface_sets.dedicated_worker_exposed.end()) {
+            gen.append(R"~~~(
+    if (is<HTML::DedicatedWorkerGlobalScope>(global_object))
+        return true;
+)~~~");
+        }
+
+        auto shared_worker_exposed_iterator = interface_sets.shared_worker_exposed.find_if([&name](IDL::Interface const& interface) {
+            return interface.name == name;
+        });
+
+        if (shared_worker_exposed_iterator != interface_sets.shared_worker_exposed.end()) {
+            gen.append(R"~~~(
+    if (is<HTML::SharedWorkerGlobalScope>(global_object))
+        return true;
+)~~~");
+        }
+
+        auto shadow_realm_exposed_iterator = interface_sets.shadow_realm_exposed.find_if([&name](IDL::Interface const& interface) {
+            return interface.name == name;
+        });
+
+        if (shadow_realm_exposed_iterator != interface_sets.shadow_realm_exposed.end()) {
+            gen.append(R"~~~(
+    if (is<HTML::ShadowRealmGlobalScope>(global_object))
+        return true;
+)~~~");
+        }
+
+        // FIXME: 2. If realm’s settings object is not a secure context, and construct is conditionally exposed on
+        //           [SecureContext], then return false.
+        // FIXME: 3. If realm’s settings object’s cross-origin isolated capability is false, and construct is
+        //           conditionally exposed on [CrossOriginIsolated], then return false.
+
+        gen.append(R"~~~(
+    return false;
+}
+)~~~");
 
         gen.append(R"~~~(
 template<>
@@ -167,7 +247,7 @@ void Intrinsics::create_web_prototype_and_constructor<@prototype_class@>(JS::Rea
 )~~~");
     };
 
-    for (auto& interface : exposed_interfaces) {
+    for (auto& interface : interface_sets.intrinsics) {
         auto gen = generator.fork();
 
         String named_properties_class;
@@ -178,7 +258,7 @@ void Intrinsics::create_web_prototype_and_constructor<@prototype_class@>(JS::Rea
         if (interface.is_namespace)
             add_namespace(gen, interface.name, interface.namespace_class);
         else
-            add_interface(gen, interface.namespaced_name, interface.prototype_class, interface.constructor_class, lookup_legacy_constructor(interface), named_properties_class);
+            add_interface(gen, interface_sets, interface.namespaced_name, interface.prototype_class, interface.constructor_class, lookup_legacy_constructor(interface), named_properties_class);
     }
 
     generator.append(R"~~~(
@@ -330,7 +410,7 @@ void add_@global_object_snake_name@_exposed_interfaces(JS::Object& global)
     return {};
 }
 
-ErrorOr<int> serenity_main(Main::Arguments arguments)
+ErrorOr<int> ladybird_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
 
@@ -396,12 +476,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     VERIFY(paths.size() == file_contents.size());
 
     Vector<IDL::Parser> parsers;
-    Vector<IDL::Interface&> intrinsics;
-    Vector<IDL::Interface&> window_exposed;
-    Vector<IDL::Interface&> dedicated_worker_exposed;
-    Vector<IDL::Interface&> shared_worker_exposed;
-    Vector<IDL::Interface&> shadow_realm_exposed;
-    // TODO: service_worker_exposed
+    InterfaceSets interface_sets;
 
     for (size_t i = 0; i < paths.size(); ++i) {
         auto const& path = paths[i];
@@ -412,11 +487,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             return Error::from_string_view(s_error_string.view());
         }
 
-        TRY(add_to_interface_sets(interface, intrinsics, window_exposed, dedicated_worker_exposed, shared_worker_exposed, shadow_realm_exposed));
+        TRY(add_to_interface_sets(interface, interface_sets));
         parsers.append(move(parser));
     }
 
-    TRY(generate_intrinsic_definitions(output_path, intrinsics));
+    TRY(generate_intrinsic_definitions(output_path, interface_sets));
 
     TRY(generate_exposed_interface_header("Window"sv, output_path));
     TRY(generate_exposed_interface_header("DedicatedWorker"sv, output_path));
@@ -424,115 +499,39 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(generate_exposed_interface_header("ShadowRealm"sv, output_path));
     // TODO: ServiceWorkerExposed.h
 
-    TRY(generate_exposed_interface_implementation("Window"sv, output_path, window_exposed));
-    TRY(generate_exposed_interface_implementation("DedicatedWorker"sv, output_path, dedicated_worker_exposed));
-    TRY(generate_exposed_interface_implementation("SharedWorker"sv, output_path, shared_worker_exposed));
-    TRY(generate_exposed_interface_implementation("ShadowRealm"sv, output_path, shadow_realm_exposed));
+    TRY(generate_exposed_interface_implementation("Window"sv, output_path, interface_sets.window_exposed));
+    TRY(generate_exposed_interface_implementation("DedicatedWorker"sv, output_path, interface_sets.dedicated_worker_exposed));
+    TRY(generate_exposed_interface_implementation("SharedWorker"sv, output_path, interface_sets.shared_worker_exposed));
+    TRY(generate_exposed_interface_implementation("ShadowRealm"sv, output_path, interface_sets.shadow_realm_exposed));
     // TODO: ServiceWorkerExposed.cpp
 
     return 0;
 }
 
-enum ExposedTo {
-    Nobody = 0x0,
-    DedicatedWorker = 0x1,
-    SharedWorker = 0x2,
-    ServiceWorker = 0x4,
-    AudioWorklet = 0x8,
-    Window = 0x10,
-    ShadowRealm = 0x20,
-    Worklet = 0x40,
-    AllWorkers = DedicatedWorker | SharedWorker | ServiceWorker | AudioWorklet, // FIXME: Is "AudioWorklet" a Worker? We'll assume it is for now (here, and line below)
-    All = AllWorkers | Window | ShadowRealm | Worklet,
-};
-AK_ENUM_BITWISE_OPERATORS(ExposedTo);
-
-static ErrorOr<ExposedTo> parse_exposure_set(IDL::Interface& interface)
+ErrorOr<void> add_to_interface_sets(IDL::Interface& interface, InterfaceSets& interface_sets)
 {
-    // NOTE: This roughly follows the definitions of https://webidl.spec.whatwg.org/#Exposed
-    //       It does not remotely interpret all the abstract operations therein though.
+    // TODO: Add service worker exposed and audio worklet exposed
 
     auto maybe_exposed = interface.extended_attributes.get("Exposed");
     if (!maybe_exposed.has_value()) {
         s_error_string = ByteString::formatted("Interface {} is missing extended attribute Exposed", interface.name);
         return Error::from_string_view(s_error_string.view());
     }
-    auto exposed = maybe_exposed.value().trim_whitespace();
-    if (exposed == "*"sv)
-        return ExposedTo::All;
-    if (exposed == "Nobody"sv)
-        return ExposedTo::Nobody;
-    if (exposed == "Window"sv)
-        return ExposedTo::Window;
-    if (exposed == "Worker"sv)
-        return ExposedTo::AllWorkers;
-    if (exposed == "DedicatedWorker"sv)
-        return ExposedTo::DedicatedWorker;
-    if (exposed == "SharedWorker"sv)
-        return ExposedTo::SharedWorker;
-    if (exposed == "ServiceWorker"sv)
-        return ExposedTo::ServiceWorker;
-    if (exposed == "AudioWorklet"sv)
-        return ExposedTo::AudioWorklet;
-    if (exposed == "Worklet"sv)
-        return ExposedTo::Worklet;
-    if (exposed == "ShadowRealm"sv)
-        return ExposedTo::ShadowRealm;
+    auto whom = TRY(IDL::parse_exposure_set(interface.name, *maybe_exposed));
 
-    if (exposed[0] == '(') {
-        ExposedTo whom = Nobody;
-        for (StringView candidate : exposed.substring_view(1, exposed.length() - 1).split_view(',')) {
-            candidate = candidate.trim_whitespace();
-            if (candidate == "Window"sv) {
-                whom |= ExposedTo::Window;
-            } else if (candidate == "Worker"sv) {
-                whom |= ExposedTo::AllWorkers;
-            } else if (candidate == "DedicatedWorker"sv) {
-                whom |= ExposedTo::DedicatedWorker;
-            } else if (candidate == "SharedWorker"sv) {
-                whom |= ExposedTo::SharedWorker;
-            } else if (candidate == "ServiceWorker"sv) {
-                whom |= ExposedTo::ServiceWorker;
-            } else if (candidate == "AudioWorklet"sv) {
-                whom |= ExposedTo::AudioWorklet;
-            } else if (candidate == "Worklet"sv) {
-                whom |= ExposedTo::Worklet;
-            } else if (candidate == "ShadowRealm"sv) {
-                whom |= ExposedTo::ShadowRealm;
-            } else {
-                s_error_string = ByteString::formatted("Unknown Exposed attribute candidate {} in {} in {}", candidate, exposed, interface.name);
-                return Error::from_string_view(s_error_string.view());
-            }
-        }
-        if (whom == ExposedTo::Nobody) {
-            s_error_string = ByteString::formatted("Unknown Exposed attribute {} in {}", exposed, interface.name);
-            return Error::from_string_view(s_error_string.view());
-        }
-        return whom;
-    }
+    interface_sets.intrinsics.append(interface);
 
-    s_error_string = ByteString::formatted("Unknown Exposed attribute {} in {}", exposed, interface.name);
-    return Error::from_string_view(s_error_string.view());
-}
+    if (whom & IDL::ExposedTo::Window)
+        interface_sets.window_exposed.append(interface);
 
-ErrorOr<void> add_to_interface_sets(IDL::Interface& interface, Vector<IDL::Interface&>& intrinsics, Vector<IDL::Interface&>& window_exposed, Vector<IDL::Interface&>& dedicated_worker_exposed, Vector<IDL::Interface&>& shared_worker_exposed, Vector<IDL::Interface&>& shadow_realm_exposed)
-{
-    // TODO: Add service worker exposed and audio worklet exposed
-    auto whom = TRY(parse_exposure_set(interface));
+    if (whom & IDL::ExposedTo::DedicatedWorker)
+        interface_sets.dedicated_worker_exposed.append(interface);
 
-    intrinsics.append(interface);
+    if (whom & IDL::ExposedTo::SharedWorker)
+        interface_sets.shared_worker_exposed.append(interface);
 
-    if (whom & ExposedTo::Window)
-        window_exposed.append(interface);
-
-    if (whom & ExposedTo::DedicatedWorker)
-        dedicated_worker_exposed.append(interface);
-
-    if (whom & ExposedTo::SharedWorker)
-        shared_worker_exposed.append(interface);
-
-    if (whom & ExposedTo::ShadowRealm)
-        shadow_realm_exposed.append(interface);
+    if (whom & IDL::ExposedTo::ShadowRealm)
+        interface_sets.shadow_realm_exposed.append(interface);
 
     return {};
 }

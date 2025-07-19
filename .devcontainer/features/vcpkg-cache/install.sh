@@ -7,6 +7,11 @@ set -e
 
 case "$(uname -m)" in
     x86_64|x64)
+      export VCPKG_DEFAULT_TRIPLET=x64-linux-dynamic
+      ;;
+    aarch64|arm64)
+      export VCPKG_DEFAULT_TRIPLET=arm64-linux-dynamic
+      export VCPKG_FORCE_SYSTEM_BINARIES=1
       ;;
     *)
       export VCPKG_FORCE_SYSTEM_BINARIES=1
@@ -28,6 +33,7 @@ python3 ./Toolchain/BuildVcpkg.py
 # Set the binary cache directory to the one we intend to use at container runtime
 export VCPKG_ROOT="${PWD}/Build/vcpkg"
 export VCPKG_BINARY_SOURCES="clear;files,${CACHE_DIR},readwrite"
+export X_VCPKG_ASSET_SOURCES="clear;x-azurl,https://vcpkg-cache.app.ladybird.org/ladybird/source-assets/,,read"
 
 # Check options to see which versions we should build
 if [ "${RELEASE_TRIPLET}" = "true" ]; then

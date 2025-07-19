@@ -38,6 +38,7 @@ ByteLengthQueuingStrategy
 CDATASection
 CSSAnimation
 CSSConditionRule
+CSSCounterStyleRule
 CSSFontFaceDescriptors
 CSSFontFaceRule
 CSSGroupingRule
@@ -61,6 +62,7 @@ CSSStyleRule
 CSSStyleSheet
 CSSSupportsRule
 CSSTransition
+CacheStorage
 CanvasGradient
 CanvasPattern
 CanvasRenderingContext2D
@@ -84,6 +86,7 @@ Crypto
 CryptoKey
 CustomElementRegistry
 CustomEvent
+CustomStateSet
 DOMException
 DOMImplementation
 DOMMatrix
@@ -136,6 +139,10 @@ FormData
 FormDataEvent
 Function
 GainNode
+Geolocation
+GeolocationCoordinates
+GeolocationPosition
+GeolocationPositionError
 HTMLAllCollection
 HTMLAnchorElement
 HTMLAreaElement
@@ -276,6 +283,8 @@ NodeList
 Number
 Object
 OfflineAudioContext
+OffscreenCanvas
+OffscreenCanvasRenderingContext2D
 Option
 OscillatorNode
 PageTransitionEvent
@@ -330,6 +339,9 @@ SVGDefsElement
 SVGDescElement
 SVGElement
 SVGEllipseElement
+SVGFEBlendElement
+SVGFEFloodElement
+SVGFEGaussianBlurElement
 SVGFilterElement
 SVGForeignObjectElement
 SVGGElement

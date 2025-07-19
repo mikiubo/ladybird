@@ -258,6 +258,11 @@ Optional<Selector::SimpleSelector::QualifiedName> Parser::parse_selector_qualifi
             ? Selector::SimpleSelector::QualifiedName::NamespaceType::Any
             : Selector::SimpleSelector::QualifiedName::NamespaceType::Named;
 
+        // https://www.w3.org/TR/selectors-4/#invalid
+        // a simple selector containing an undeclared namespace prefix is invalid
+        if (namespace_type == Selector::SimpleSelector::QualifiedName::NamespaceType::Named && !m_declared_namespaces.contains(namespace_))
+            return {};
+
         transaction.commit();
         return Selector::SimpleSelector::QualifiedName {
             .namespace_type = namespace_type,
@@ -461,6 +466,20 @@ Parser::ParseErrorOr<Selector::SimpleSelector> Parser::parse_pseudo_simple_selec
                         return ParseError::SyntaxError;
                     }
                     break;
+                case PseudoElementMetadata::ParameterType::CompoundSelector: {
+                    auto compound_selector_or_error = parse_compound_selector(function_tokens);
+                    if (compound_selector_or_error.is_error() || !compound_selector_or_error.value().has_value()) {
+                        dbgln_if(CSS_PARSER_DEBUG, "Failed to parse ::{}() parameter as a compound selector", pseudo_name);
+                        return ParseError::SyntaxError;
+                    }
+
+                    auto compound_selector = compound_selector_or_error.release_value().release_value();
+                    compound_selector.combinator = Selector::Combinator::None;
+
+                    Vector compound_selectors { move(compound_selector) };
+                    value = Selector::create(move(compound_selectors));
+                    break;
+                }
                 case PseudoElementMetadata::ParameterType::PTNameSelector: {
                     // <pt-name-selector> = '*' | <custom-ident>
                     // https://drafts.csswg.org/css-view-transitions-1/#typedef-pt-name-selector
@@ -470,12 +489,12 @@ Parser::ParseErrorOr<Selector::SimpleSelector> Parser::parse_pseudo_simple_selec
                     } else if (auto custom_ident = parse_custom_ident(function_tokens, {}); custom_ident.has_value()) {
                         value = Selector::PseudoElementSelector::PTNameSelector { .value = custom_ident.release_value() };
                     } else {
-                        dbgln_if(CSS_PARSER_DEBUG, "Invalid <pt-name-selector> in :{}() - expected `*` or `<custom-ident>`, got `{}`", pseudo_name, function_tokens.next_token().to_debug_string());
+                        dbgln_if(CSS_PARSER_DEBUG, "Invalid <pt-name-selector> in ::{}() - expected `*` or `<custom-ident>`, got `{}`", pseudo_name, function_tokens.next_token().to_debug_string());
                         return ParseError::SyntaxError;
                     }
                     function_tokens.discard_whitespace();
                     if (function_tokens.has_next_token()) {
-                        dbgln_if(CSS_PARSER_DEBUG, "Invalid <pt-name-selector> in :{}() - trailing tokens", pseudo_name);
+                        dbgln_if(CSS_PARSER_DEBUG, "Invalid <pt-name-selector> in ::{}() - trailing tokens", pseudo_name);
                         return ParseError::SyntaxError;
                     }
                     break;

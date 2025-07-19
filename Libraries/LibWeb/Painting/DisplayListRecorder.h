@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
+ * Copyright (c) 2023-2025, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -7,31 +7,30 @@
 #pragma once
 
 #include <AK/Forward.h>
-#include <AK/NonnullRefPtr.h>
 #include <AK/Vector.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/Gradients.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibGfx/LineStyle.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/ScalingMode.h>
-#include <LibGfx/Size.h>
-#include <LibGfx/TextAlignment.h>
-#include <LibGfx/TextLayout.h>
-#include <LibWeb/CSS/Enums.h>
+#include <LibWeb/Forward.h>
 #include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
-#include <LibWeb/Painting/Command.h>
-#include <LibWeb/Painting/DisplayList.h>
+#include <LibWeb/Painting/ClipFrame.h>
 #include <LibWeb/Painting/GradientData.h>
 #include <LibWeb/Painting/PaintBoxShadowParams.h>
-#include <LibWeb/Painting/PaintStyle.h>
 
 namespace Web::Painting {
+
+struct StackingContextTransform {
+    Gfx::FloatPoint origin;
+    Gfx::FloatMatrix4x4 matrix;
+};
 
 class DisplayListRecorder {
     AK_MAKE_NONCOPYABLE(DisplayListRecorder);
@@ -97,7 +96,7 @@ public:
     void draw_painting_surface(Gfx::IntRect const& dst_rect, NonnullRefPtr<Gfx::PaintingSurface>, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode = Gfx::ScalingMode::NearestNeighbor);
     void draw_scaled_immutable_bitmap(Gfx::IntRect const& dst_rect, Gfx::IntRect const& clip_rect, Gfx::ImmutableBitmap const& bitmap, Gfx::ScalingMode scaling_mode = Gfx::ScalingMode::NearestNeighbor);
 
-    void draw_repeated_immutable_bitmap(Gfx::IntRect dst_rect, Gfx::IntRect clip_rect, NonnullRefPtr<Gfx::ImmutableBitmap const> bitmap, Gfx::ScalingMode scaling_mode, DrawRepeatedImmutableBitmap::Repeat);
+    void draw_repeated_immutable_bitmap(Gfx::IntRect dst_rect, Gfx::IntRect clip_rect, NonnullRefPtr<Gfx::ImmutableBitmap const> bitmap, Gfx::ScalingMode scaling_mode, bool repeat_x, bool repeat_y);
 
     void draw_line(Gfx::IntPoint from, Gfx::IntPoint to, Color color, int thickness = 1, Gfx::LineStyle style = Gfx::LineStyle::Solid, Color alternate_color = Color::Transparent);
 
@@ -112,6 +111,9 @@ public:
 
     void push_scroll_frame_id(Optional<i32> id);
     void pop_scroll_frame_id();
+
+    void push_clip_frame(RefPtr<ClipFrame const>);
+    void pop_clip_frame();
 
     void save();
     void save_layer();
@@ -159,10 +161,11 @@ public:
 
     DisplayList& display_list() { return m_command_list; }
 
-    void append(Command&& command);
+    int m_save_nesting_level { 0 };
 
 private:
     Vector<Optional<i32>> m_scroll_frame_id_stack;
+    Vector<RefPtr<ClipFrame const>> m_clip_frame_stack;
     DisplayList& m_command_list;
 };
 

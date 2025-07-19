@@ -40,17 +40,17 @@
     "stretch",
     "unsafe"
   ],
-  "animation-fill-mode": [
-    "backwards",
-    "both",
-    "forwards",
-    "none"
-  ],
   "animation-direction": [
     "alternate",
     "alternate-reverse",
     "normal",
     "reverse"
+  ],
+  "animation-fill-mode": [
+    "backwards",
+    "both",
+    "forwards",
+    "none"
   ],
   "animation-play-state": [
     "paused",
@@ -89,6 +89,12 @@
     "separate",
     "collapse"
   ],
+  "border-image-repeat": [
+    "stretch",
+    "repeat",
+    "round",
+    "space"
+  ],
   "box-sizing": [
     "border-box",
     "content-box"
@@ -101,7 +107,9 @@
     "none",
     "left",
     "right",
-    "both"
+    "both",
+    "inline-start",
+    "inline-end"
   ],
   "column-span": [
     "none",
@@ -142,7 +150,7 @@
     "anonymous",
     "use-credentials"
   ],
-  "cursor": [
+  "cursor-predefined": [
     "auto",
     "default",
     "none",
@@ -222,6 +230,10 @@
     "inline",
     "run-in"
   ],
+  "empty-cells": [
+    "show",
+    "hide"
+  ],
   "fill-rule": [
     "nonzero",
     "evenodd"
@@ -251,12 +263,31 @@
     "fallback",
     "optional"
   ],
+  "font-kerning": [
+    "auto",
+    "normal",
+    "none"
+  ],
   "font-style": [
     "normal",
     "italic",
     "left",
     "right",
     "oblique"
+  ],
+  "font-tech": [
+    "avar2",
+    "color-cbdt",
+    "color-colrv0",
+    "color-colrv1",
+    "color-sbix",
+    "color-svg",
+    "features-aat",
+    "features-graphite",
+    "features-opentype",
+    "incremental",
+    "palettes",
+    "variations"
   ],
   "font-variant-alternates": [
     "normal",
@@ -419,6 +450,11 @@
     "inset",
     "outset"
   ],
+  "line-width": [
+    "thin",
+    "medium",
+    "thick"
+  ],
   "list-style-position": [
     "inside",
     "outside"
@@ -504,19 +540,19 @@
     "lch",
     "oklch"
   ],
-  "positioning": [
-    "absolute",
-    "fixed",
-    "relative",
-    "static",
-    "sticky"
-  ],
   "position-edge": [
     "center",
     "left",
     "right",
     "top",
     "bottom"
+  ],
+  "positioning": [
+    "absolute",
+    "fixed",
+    "relative",
+    "static",
+    "sticky"
   ],
   "referrer-policy-modifier-value": [
     "no-referrer",
@@ -573,6 +609,7 @@
     "right",
     "match-parent",
     "-libweb-center",
+    "-libweb-inherit-or-center",
     "-libweb-left",
     "-libweb-right"
   ],
@@ -608,6 +645,12 @@
     "clip",
     "ellipsis"
   ],
+  "text-rendering": [
+    "auto",
+    "optimizespeed",
+    "optimizelegibility",
+    "geometricprecision"
+  ],
   "text-transform": [
     "capitalize",
     "full-size-kana",
@@ -620,6 +663,12 @@
   "text-wrap-mode": [
     "wrap",
     "nowrap"
+  ],
+  "text-wrap-style": [
+    "auto",
+    "balance",
+    "stable",
+    "pretty"
   ],
   "touch-action": [
     "auto",

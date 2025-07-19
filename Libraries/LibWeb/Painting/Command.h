@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
+ * Copyright (c) 2024-2025, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,7 +8,6 @@
 
 #include <AK/Forward.h>
 #include <AK/NonnullRefPtr.h>
-#include <AK/Utf8View.h>
 #include <AK/Vector.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
@@ -17,18 +16,16 @@
 #include <LibGfx/LineStyle.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/PaintingSurface.h>
-#include <LibGfx/Palette.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/ScalingMode.h>
 #include <LibGfx/Size.h>
-#include <LibGfx/TextAlignment.h>
 #include <LibGfx/TextLayout.h>
 #include <LibWeb/CSS/ComputedValues.h>
-#include <LibWeb/CSS/Enums.h>
 #include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
+#include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/GradientData.h>
 #include <LibWeb/Painting/PaintBoxShadowParams.h>
 #include <LibWeb/Painting/PaintStyle.h>
@@ -47,6 +44,7 @@ struct DrawGlyphRun {
     Gfx::Orientation orientation { Gfx::Orientation::Horizontal };
 
     void translate_by(Gfx::IntPoint const& offset);
+    void dump(StringBuilder&) const;
 };
 
 struct FillRect {
@@ -55,6 +53,7 @@ struct FillRect {
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawPaintingSurface {
@@ -65,6 +64,7 @@ struct DrawPaintingSurface {
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return dst_rect; }
     void translate_by(Gfx::IntPoint const& offset) { dst_rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawScaledImmutableBitmap {
@@ -79,6 +79,7 @@ struct DrawScaledImmutableBitmap {
         dst_rect.translate_by(offset);
         clip_rect.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawRepeatedImmutableBitmap {
@@ -94,16 +95,26 @@ struct DrawRepeatedImmutableBitmap {
     Repeat repeat;
 
     void translate_by(Gfx::IntPoint const& offset) { dst_rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
-struct Save { };
-struct SaveLayer { };
-struct Restore { };
+struct Save {
+    void dump(StringBuilder&) const;
+};
+
+struct SaveLayer {
+    void dump(StringBuilder&) const;
+};
+
+struct Restore {
+    void dump(StringBuilder&) const;
+};
 
 struct Translate {
     Gfx::IntPoint delta;
 
     void translate_by(Gfx::IntPoint const& offset) { delta.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct AddClipRect {
@@ -112,11 +123,7 @@ struct AddClipRect {
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
     bool is_clip_or_mask() const { return true; }
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
-};
-
-struct StackingContextTransform {
-    Gfx::FloatPoint origin;
-    Gfx::FloatMatrix4x4 matrix;
+    void dump(StringBuilder&) const;
 };
 
 struct PushStackingContext {
@@ -137,9 +144,12 @@ struct PushStackingContext {
             clip_path.value().transform(Gfx::AffineTransform().translate(offset.to_type<float>()));
         }
     }
+    void dump(StringBuilder&) const;
 };
 
-struct PopStackingContext { };
+struct PopStackingContext {
+    void dump(StringBuilder&) const;
+};
 
 struct PaintLinearGradient {
     Gfx::IntRect gradient_rect;
@@ -151,6 +161,7 @@ struct PaintLinearGradient {
     {
         gradient_rect.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct PaintOuterBoxShadow {
@@ -158,6 +169,7 @@ struct PaintOuterBoxShadow {
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const;
     void translate_by(Gfx::IntPoint const& offset);
+    void dump(StringBuilder&) const;
 };
 
 struct PaintInnerBoxShadow {
@@ -165,6 +177,7 @@ struct PaintInnerBoxShadow {
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const;
     void translate_by(Gfx::IntPoint const& offset);
+    void dump(StringBuilder&) const;
 };
 
 struct PaintTextShadow {
@@ -178,6 +191,7 @@ struct PaintTextShadow {
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return { draw_location.to_type<int>(), shadow_bounding_rect.size() }; }
     void translate_by(Gfx::IntPoint const& offset) { draw_location.translate_by(offset.to_type<float>()); }
+    void dump(StringBuilder&) const;
 };
 
 struct FillRectWithRoundedCorners {
@@ -187,6 +201,7 @@ struct FillRectWithRoundedCorners {
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct FillPathUsingColor {
@@ -203,6 +218,7 @@ struct FillPathUsingColor {
         path_bounding_rect.translate_by(offset);
         aa_translation.translate_by(offset.to_type<float>());
     }
+    void dump(StringBuilder&) const;
 };
 
 struct FillPathUsingPaintStyle {
@@ -220,6 +236,7 @@ struct FillPathUsingPaintStyle {
         path_bounding_rect.translate_by(offset);
         aa_translation.translate_by(offset.to_type<float>());
     }
+    void dump(StringBuilder&) const;
 };
 
 struct StrokePathUsingColor {
@@ -241,6 +258,7 @@ struct StrokePathUsingColor {
         path_bounding_rect.translate_by(offset);
         aa_translation.translate_by(offset.to_type<float>());
     }
+    void dump(StringBuilder&) const;
 };
 
 struct StrokePathUsingPaintStyle {
@@ -263,6 +281,7 @@ struct StrokePathUsingPaintStyle {
         path_bounding_rect.translate_by(offset);
         aa_translation.translate_by(offset.to_type<float>());
     }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawEllipse {
@@ -276,6 +295,7 @@ struct DrawEllipse {
     {
         rect.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct FillEllipse {
@@ -288,6 +308,7 @@ struct FillEllipse {
     {
         rect.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawLine {
@@ -303,6 +324,7 @@ struct DrawLine {
         from.translate_by(offset);
         to.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct ApplyBackdropFilter {
@@ -316,6 +338,7 @@ struct ApplyBackdropFilter {
     {
         backdrop_region.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawRect {
@@ -326,6 +349,7 @@ struct DrawRect {
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct PaintRadialGradient {
@@ -337,6 +361,7 @@ struct PaintRadialGradient {
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct PaintConicGradient {
@@ -347,6 +372,7 @@ struct PaintConicGradient {
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct DrawTriangleWave {
@@ -361,6 +387,7 @@ struct DrawTriangleWave {
         p1.translate_by(offset);
         p2.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct AddRoundedRectClip {
@@ -372,6 +399,7 @@ struct AddRoundedRectClip {
     bool is_clip_or_mask() const { return true; }
 
     void translate_by(Gfx::IntPoint const& offset) { border_rect.translate_by(offset); }
+    void dump(StringBuilder&) const;
 };
 
 struct AddMask {
@@ -385,6 +413,8 @@ struct AddMask {
     {
         rect.translate_by(offset);
     }
+
+    void dump(StringBuilder&) const;
 };
 
 struct PaintNestedDisplayList {
@@ -398,6 +428,7 @@ struct PaintNestedDisplayList {
     {
         rect.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct PaintScrollBar {
@@ -414,18 +445,22 @@ struct PaintScrollBar {
         gutter_rect.translate_by(offset);
         thumb_rect.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 struct ApplyOpacity {
     float opacity;
+    void dump(StringBuilder&) const;
 };
 
 struct ApplyCompositeAndBlendingOperator {
     Gfx::CompositingAndBlendingOperator compositing_and_blending_operator;
+    void dump(StringBuilder&) const;
 };
 
 struct ApplyFilter {
     Gfx::Filter filter;
+    void dump(StringBuilder&) const;
 };
 
 struct ApplyTransform {
@@ -436,6 +471,7 @@ struct ApplyTransform {
     {
         origin.translate_by(offset.to_type<float>());
     }
+    void dump(StringBuilder&) const;
 };
 
 struct ApplyMaskBitmap {
@@ -447,6 +483,7 @@ struct ApplyMaskBitmap {
     {
         origin.translate_by(offset);
     }
+    void dump(StringBuilder&) const;
 };
 
 using Command = Variant<
