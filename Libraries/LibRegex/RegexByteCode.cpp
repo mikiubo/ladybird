@@ -260,6 +260,50 @@ ALWAYS_INLINE ExecutionResult OpCode_GoBack::execute(MatchInput const& input, Ma
     return ExecutionResult::Continue;
 }
 
+ALWAYS_INLINE ExecutionResult OpCode_SetStepBack::execute(MatchInput const&, MatchState& state) const
+{
+    state.step_backs.append(step());
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_IncStepBack::execute(MatchInput const& input, MatchState& state) const
+{
+    if (state.step_backs.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    size_t last_step_back = static_cast<size_t>(++state.step_backs.last());
+
+    if (last_step_back > state.string_position)
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    reverse_string_position(state, input.view, last_step_back);
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_CheckStepBack::execute(MatchInput const& input, MatchState& state) const
+{
+    if (state.step_backs.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    if (input.saved_positions.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    // NOTE: Fail if the step-back would move before the lookbehind start.
+    if (static_cast<size_t>(state.step_backs.last()) > input.saved_positions.last())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+
+    // NOTE: Restores the string position saved before executing a lookbehind.
+    state.string_position = input.saved_positions.last();
+    state.string_position_in_code_units = input.saved_code_unit_positions.last();
+    return ExecutionResult::Continue;
+}
+
+ALWAYS_INLINE ExecutionResult OpCode_CheckSavedPosition::execute(MatchInput const& input, MatchState& state) const
+{
+    if (state.string_position != input.saved_positions.last())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
+    state.step_backs.take_last();
+    return ExecutionResult::Continue;
+}
+
 ALWAYS_INLINE ExecutionResult OpCode_FailForks::execute(MatchInput const& input, MatchState& state) const
 {
     input.fail_counter += state.forks_since_last_save;
