@@ -46,6 +46,10 @@ using ByteCodeValueType = u64;
     __ENUMERATE_OPCODE(Save)                       \
     __ENUMERATE_OPCODE(Restore)                    \
     __ENUMERATE_OPCODE(GoBack)                     \
+    __ENUMERATE_OPCODE(SetStepBack)                \
+    __ENUMERATE_OPCODE(IncStepBack)                \
+    __ENUMERATE_OPCODE(CheckStepBack)              \
+    __ENUMERATE_OPCODE(CheckSavedPosition)         \
     __ENUMERATE_OPCODE(ClearCaptureGroup)          \
     __ENUMERATE_OPCODE(Repeat)                     \
     __ENUMERATE_OPCODE(ResetRepeat)                \
@@ -541,13 +545,28 @@ public:
         }
         case LookAroundType::LookBehind:
             // SAVE
-            // GOBACK match_length(BODY)
-            // REGEXP BODY
+            // SET_STEPBACK match_length(BODY)-1
+            // LABEL _START
+            // INC_STEPBACK
+            // FORK_JUMP _BODY
+            // CHECK_STEPBACK
+            // JUMP _START
+            // LABEL _BODY
+            // REGEX BODY
+            // CHECK_SAVED_POSITION
             // RESTORE
+
             empend((ByteCodeValueType)OpCodeId::Save);
-            empend((ByteCodeValueType)OpCodeId::GoBack);
-            empend((ByteCodeValueType)match_length);
+            empend((ByteCodeValueType)OpCodeId::SetStepBack);
+            empend((ByteCodeValueType)match_length - 1);
+            empend((ByteCodeValueType)OpCodeId::IncStepBack);
+            empend((ByteCodeValueType)OpCodeId::ForkJump);
+            empend((ByteCodeValueType)1 + 2); // JUMP to label _BODY
+            empend((ByteCodeValueType)OpCodeId::CheckStepBack);
+            empend((ByteCodeValueType)OpCodeId::Jump);
+            empend((ByteCodeValueType)-6); // JUMP to label _START
             extend(move(lookaround_body));
+            empend((ByteCodeValueType)OpCodeId::CheckSavedPosition);
             empend((ByteCodeValueType)OpCodeId::Restore);
             return;
         case LookAroundType::NegatedLookBehind: {
@@ -956,7 +975,65 @@ public:
 };
 
 template<typename ByteCode>
+class OpCode_SetStepBack final : public OpCode<ByteCode> {
+public:
+    using OpCode<ByteCode>::argument;
+    using OpCode<ByteCode>::name;
+    using OpCode<ByteCode>::state;
+    using OpCode<ByteCode>::bytecode;
+
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::SetStepBack; }
+    ALWAYS_INLINE size_t size() const override { return 2; }
+    ALWAYS_INLINE i64 step() const { return argument(0); }
+    ByteString arguments_string() const override { return ByteString::formatted("step={}", step()); }
+};
+
+template<typename ByteCode>
+class OpCode_IncStepBack final : public OpCode<ByteCode> {
+public:
+    using OpCode<ByteCode>::argument;
+    using OpCode<ByteCode>::name;
+    using OpCode<ByteCode>::state;
+    using OpCode<ByteCode>::bytecode;
+
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::IncStepBack; }
+    ALWAYS_INLINE size_t size() const override { return 1; }
+    ByteString arguments_string() const override { return ByteString::formatted("inc step back"); }
+};
+
+template<typename ByteCode>
+class OpCode_CheckStepBack final : public OpCode<ByteCode> {
+public:
+    using OpCode<ByteCode>::argument;
+    using OpCode<ByteCode>::name;
+    using OpCode<ByteCode>::state;
+    using OpCode<ByteCode>::bytecode;
+
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::CheckStepBack; }
+    ALWAYS_INLINE size_t size() const override { return 1; }
+    ByteString arguments_string() const override { return ByteString::formatted("check step back"); }
+};
+
+template<typename ByteCode>
+class OpCode_CheckSavedPosition final : public OpCode<ByteCode> {
+public:
+    using OpCode<ByteCode>::argument;
+    using OpCode<ByteCode>::name;
+    using OpCode<ByteCode>::state;
+    using OpCode<ByteCode>::bytecode;
+
+    ExecutionResult execute(MatchInput const& input, MatchState& state) const override;
+    ALWAYS_INLINE OpCodeId opcode_id() const override { return OpCodeId::CheckSavedPosition; }
+    ALWAYS_INLINE size_t size() const override { return 1; }
+    ByteString arguments_string() const override { return ByteString::formatted("check saved back"); }
+};
+
+template<typename ByteCode>
 class OpCode_Jump final : public OpCode<ByteCode> {
+
 public:
     using OpCode<ByteCode>::argument;
     using OpCode<ByteCode>::name;
@@ -1411,6 +1488,38 @@ struct Is<OpCode_Compare, ByteCode> {
     static bool is(OpCode<ByteCode> const& opcode)
     {
         return opcode.opcode_id() == OpCodeId::Compare;
+    }
+};
+
+template<typename ByteCode>
+struct Is<OpCode_SetStepBack, ByteCode> {
+    static bool is(OpCode<ByteCode> const& opcode)
+    {
+        return opcode.opcode_id() == OpCodeId::SetStepBack;
+    }
+};
+
+template<typename ByteCode>
+struct Is<OpCode_IncStepBack, ByteCode> {
+    static bool is(OpCode<ByteCode> const& opcode)
+    {
+        return opcode.opcode_id() == OpCodeId::IncStepBack;
+    }
+};
+
+template<typename ByteCode>
+struct Is<OpCode_CheckStepBack, ByteCode> {
+    static bool is(OpCode<ByteCode> const& opcode)
+    {
+        return opcode.opcode_id() == OpCodeId::CheckStepBack;
+    }
+};
+
+template<typename ByteCode>
+struct Is<OpCode_CheckSavedPosition, ByteCode> {
+    static bool is(OpCode<ByteCode> const& opcode)
+    {
+        return opcode.opcode_id() == OpCodeId::CheckSavedPosition;
     }
 };
 
