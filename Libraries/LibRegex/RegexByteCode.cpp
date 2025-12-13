@@ -317,6 +317,8 @@ ALWAYS_INLINE ExecutionResult OpCode_CheckStepBack<ByteCode>::execute(MatchInput
 template<typename ByteCode>
 ALWAYS_INLINE ExecutionResult OpCode_CheckSavedPosition<ByteCode>::execute(MatchInput const& input, MatchState& state) const
 {
+    if (input.saved_positions.is_empty())
+        return ExecutionResult::Failed_ExecuteLowPrioForks;
     if (state.string_position != input.saved_positions.last())
         return ExecutionResult::Failed_ExecuteLowPrioForks;
     state.step_backs.take_last();
@@ -546,7 +548,7 @@ ALWAYS_INLINE ExecutionResult OpCode_SaveRightCaptureGroup<ByteCode>::execute(Ma
 
     auto length = state.string_position - start_position;
 
-    if (start_position < match.column)
+    if (start_position < match.column && state.step_backs.is_empty())
         return ExecutionResult::Continue;
 
     VERIFY(start_position + length <= input.view.length_in_code_units());
