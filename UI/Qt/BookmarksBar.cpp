@@ -12,8 +12,15 @@
 #include <UI/Qt/StringUtils.h>
 
 #include <QAction>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDropEvent>
 #include <QMenu>
+#include <QMimeData>
 #include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
 #include <QToolButton>
 #include <qapplication.h>
 
@@ -38,6 +45,7 @@ BookmarksBar::BookmarksBar(QWidget* parent)
     setIconSize({ BOOKMARK_BUTTON_ICON_SIZE, BOOKMARK_BUTTON_ICON_SIZE });
     setVisible(WebView::Application::settings().show_bookmarks_bar());
     setMovable(false);
+    setAcceptDrops(true);
 
     installEventFilter(this);
 
@@ -119,6 +127,16 @@ bool BookmarksBar::eventFilter(QObject* object, QEvent* event)
     if (event->type() == QEvent::MouseButtonPress) {
         auto& mouse_event = as<QMouseEvent>(*event);
 
+        if (mouse_event.button() == Qt::LeftButton) {
+            if (auto* button = as_if<QToolButton>(object)) {
+                auto* action = button->defaultAction();
+                if (action && is_bookmark_bar_action(*action)) {
+                    m_drag_source_button = button;
+                    m_drag_start_position = mouse_event.pos();
+                }
+            }
+        }
+
         if (mouse_event.button() == Qt::LeftButton)
             return handle_left_mouse_click(&mouse_event, object);
         if (mouse_event.button() == Qt::MiddleButton)
@@ -127,7 +145,100 @@ bool BookmarksBar::eventFilter(QObject* object, QEvent* event)
             return handle_right_mouse_click(&mouse_event, object);
     }
 
+    if (event->type() == QEvent::MouseMove) {
+        maybe_start_drag(&as<QMouseEvent>(*event), object);
+        return false;
+    }
+
+    if (event->type() == QEvent::MouseButtonRelease) {
+        m_drag_source_button.clear();
+    }
+
     return QToolBar::eventFilter(object, event);
+}
+
+void BookmarksBar::dragEnterEvent(QDragEnterEvent* event)
+{
+    if (event->mimeData()->hasFormat("application/x-ladybird-bookmark-id")) {
+        m_drop_target_index = drop_target_index(event->position().toPoint());
+        update();
+
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+        return;
+    }
+
+    QToolBar::dragEnterEvent(event);
+}
+
+void BookmarksBar::dragLeaveEvent(QDragLeaveEvent* event)
+{
+    m_drop_target_index.clear();
+    update();
+    QToolBar::dragLeaveEvent(event);
+}
+
+void BookmarksBar::dragMoveEvent(QDragMoveEvent* event)
+{
+    if (event->mimeData()->hasFormat("application/x-ladybird-bookmark-id")) {
+        auto target_index = drop_target_index(event->position().toPoint());
+        if (!m_drop_target_index.has_value() || *m_drop_target_index != target_index) {
+            m_drop_target_index = target_index;
+            update();
+        }
+
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+        return;
+    }
+
+    QToolBar::dragMoveEvent(event);
+}
+
+void BookmarksBar::dropEvent(QDropEvent* event)
+{
+    if (!event->mimeData()->hasFormat("application/x-ladybird-bookmark-id")) {
+        m_drop_target_index.clear();
+        update();
+        QToolBar::dropEvent(event);
+        return;
+    }
+
+    auto id = ak_string_from_qstring(QString::fromUtf8(event->mimeData()->data("application/x-ladybird-bookmark-id")));
+    if (id.is_empty()) {
+        m_drop_target_index.clear();
+        update();
+        QToolBar::dropEvent(event);
+        return;
+    }
+
+    auto target_index = drop_target_index(event->position().toPoint());
+    WebView::Application::bookmark_store().move_item(id, {}, target_index);
+
+    m_drop_target_index.clear();
+    update();
+
+    event->setDropAction(Qt::MoveAction);
+    event->accept();
+}
+
+void BookmarksBar::paintEvent(QPaintEvent* event)
+{
+    QToolBar::paintEvent(event);
+
+    if (!m_drop_target_index.has_value())
+        return;
+
+    auto indicator_x = drop_indicator_x_position(*m_drop_target_index);
+    if (!indicator_x.has_value())
+        return;
+
+    QPainter painter(this);
+    auto color = palette().highlight().color();
+    color.setAlpha(230);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color);
+    painter.drawRoundedRect(QRectF(*indicator_x - 1.5, 4, 3, height() - 8), 1.5, 1.5);
 }
 
 bool BookmarksBar::handle_left_mouse_click(QMouseEvent* event, QObject* item)
@@ -200,6 +311,47 @@ bool BookmarksBar::handle_right_mouse_click(QMouseEvent* event, QObject* item)
     return true;
 }
 
+void BookmarksBar::maybe_start_drag(QMouseEvent* event, QObject* item)
+{
+    if (!m_drag_source_button || item != m_drag_source_button)
+        return;
+
+    if ((event->buttons() & Qt::LeftButton) == 0)
+        return;
+
+    if ((event->pos() - m_drag_start_position).manhattanLength() < QApplication::startDragDistance())
+        return;
+
+    auto* action = m_drag_source_button->defaultAction();
+    if (!action || !is_bookmark_bar_action(*action))
+        return;
+
+    auto id = action->property("id").toString();
+    if (id.isEmpty())
+        return;
+
+    auto* drag = new QDrag(m_drag_source_button);
+    auto* mime_data = new QMimeData();
+    mime_data->setData("application/x-ladybird-bookmark-id", id.toUtf8());
+    drag->setMimeData(mime_data);
+
+    auto source_pixmap = m_drag_source_button->grab();
+    QPixmap drag_pixmap(source_pixmap.size());
+    drag_pixmap.fill(Qt::transparent);
+
+    QPainter painter(&drag_pixmap);
+    painter.setOpacity(0.8);
+    painter.drawPixmap(0, 0, source_pixmap);
+    painter.setPen(QPen(palette().highlight().color(), 2));
+    painter.drawRoundedRect(QRect(1, 1, drag_pixmap.width() - 2, drag_pixmap.height() - 2), 4, 4);
+
+    drag->setPixmap(drag_pixmap);
+    drag->setHotSpot(event->pos());
+
+    m_drag_source_button.clear();
+    drag->exec(Qt::MoveAction);
+}
+
 void BookmarksBar::extract_item_properties(QObject* item)
 {
     m_selected_bookmark_menu_item_id = ak_string_from_qstring(item->property("id").toString());
@@ -207,6 +359,57 @@ void BookmarksBar::extract_item_properties(QObject* item)
 
     if (auto value = ak_string_from_qstring(item->property("target_folder_id").toString()); !value.is_empty())
         m_selected_bookmark_menu_target_folder_id = AK::move(value);
+}
+
+bool BookmarksBar::is_bookmark_bar_action(QAction const& action) const
+{
+    auto id = action.property("id").toString();
+    auto type = action.property("type").toString();
+    return !id.isEmpty() && type == "bookmark";
+}
+
+size_t BookmarksBar::drop_target_index(QPoint const& position) const
+{
+    size_t index = 0;
+
+    for (auto* action : actions()) {
+        if (!is_bookmark_bar_action(*action))
+            continue;
+
+        auto* widget = widgetForAction(action);
+        if (!widget)
+            continue;
+
+        auto geometry = widget->geometry();
+        if (position.x() < geometry.center().x())
+            return index;
+
+        ++index;
+    }
+
+    return index;
+}
+
+Optional<int> BookmarksBar::drop_indicator_x_position(size_t index) const
+{
+    Vector<QWidget*> bookmark_widgets;
+
+    for (auto* action : actions()) {
+        if (!is_bookmark_bar_action(*action))
+            continue;
+
+        if (auto* widget = widgetForAction(action); widget && widget->isVisible())
+            bookmark_widgets.append(widget);
+    }
+
+    if (bookmark_widgets.is_empty())
+        return {};
+
+    if (index == 0)
+        return bookmark_widgets.first()->geometry().left();
+    if (index >= bookmark_widgets.size())
+        return bookmark_widgets.last()->geometry().right() + 1;
+    return bookmark_widgets[index]->geometry().left();
 }
 
 QMenu& BookmarksBar::bookmarks_bar_context_menu()
