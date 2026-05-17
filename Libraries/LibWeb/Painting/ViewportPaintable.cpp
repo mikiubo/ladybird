@@ -294,8 +294,23 @@ static Optional<ClipData> compute_clip_data(PaintableBox const& paintable_box, C
         //   Expanding Clipping Bounds: the 'overflow-clip-margin' property.
         // - However, when one of 'overflow-x' or 'overflow-y' computes to 'clip' and the other computes to 'visible', the
         //   clipping region is not rounded.
-        // FIXME: Adjust the border radii for the overflow-clip-margin case. (see https://drafts.csswg.org/css-overflow-4/#valdef-overflow-clip-margin-length-0 )
         auto radii = (overflow_x != CSS::Overflow::Visible && overflow_y != CSS::Overflow::Visible) ? paintable_box.normalized_border_radii_data(PaintableBox::ShrinkRadiiForBorders::Yes) : BorderRadiiData {};
+
+        // https://drafts.csswg.org/css-overflow-4/#overflow-clip-margin
+        // The overflow clip edge is shaped in the corners exactly the same way as an outer box-shadow with a spread
+        // radius of the same cumulative offset from the box's border edge.
+        // FIXME: This uses a single spread value taken from the top side. Per-side visual-box or per-side offsets are
+        //        not fully handled yet. See https://github.com/w3c/csswg-drafts/issues/8381.
+        if (radii.has_any_radius() && overflow_x == CSS::Overflow::Clip && overflow_y == CSS::Overflow::Clip) {
+            auto border_box_rect = paintable_box.absolute_border_box_rect();
+            auto spread = overflow_clip_edge.top() < border_box_rect.top()
+                ? (border_box_rect.top() - overflow_clip_edge.top())
+                : CSSPixels(0);
+            auto corner_radii = radii.as_corners(converter);
+            corner_radii.adjust_corners_for_spread_distance(converter.rounded_device_pixels(spread).value());
+            return ClipData { converter.rounded_device_rect(clip_rect), corner_radii };
+        }
+
         return ClipData { converter.rounded_device_rect(clip_rect), radii.as_corners(converter) };
     }
 
