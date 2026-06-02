@@ -466,7 +466,13 @@ String RegExpObject::escape_regexp_pattern() const
     if (m_pattern.is_empty())
         return "(?:)"_string;
 
-    // FIXME: Check the 'u' and 'v' flags and escape accordingly
+    // Step 1-3 of EscapeRegExpPattern select the patternSymbol grammar based on the "u" and "v" flags.
+    // We do not need to materialize the symbol, but we must escape lone surrogates as RegExpUnicodeEscapeSequence
+    // when Pattern[+UnicodeMode] is in effect, since +UnicodeMode does not accept raw lone surrogate code units
+    // as PatternCharacter / SourceCharacter. In ~UnicodeMode raw lone surrogates remain valid SourceCharacters and
+    // can be emitted as-is, preserving the original pattern.
+    bool const unicode_mode = has_flag(m_flag_bits, Flags::Unicode) || has_flag(m_flag_bits, Flags::UnicodeSets);
+
     StringBuilder builder;
     auto escaped = false;
     auto in_character_class = false;
@@ -527,7 +533,12 @@ String RegExpObject::escape_regexp_pattern() const
             builder.append("\\u2029"sv);
             break;
         default:
-            builder.append_code_point(code_point);
+            // In Pattern[+UnicodeMode] (flags "u" or "v"), lone surrogates may not appear as raw SourceCharacters;
+            // they must be expressed via RegExpUnicodeEscapeSequence. In ~UnicodeMode the original code unit is valid.
+            if (unicode_mode && (AK::UnicodeUtils::is_utf16_high_surrogate(code_point) || AK::UnicodeUtils::is_utf16_low_surrogate(code_point)))
+                builder.appendff("\\u{:04X}", code_point);
+            else
+                builder.append_code_point(code_point);
             break;
         }
     }
