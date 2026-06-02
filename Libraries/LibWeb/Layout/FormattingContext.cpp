@@ -19,6 +19,7 @@
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/GridFormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
+#include <LibWeb/Layout/MathFormattingContext.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
 #include <LibWeb/Layout/SVGFormattingContext.h>
@@ -313,9 +314,14 @@ Optional<FormattingContext::Type> FormattingContext::formatting_context_type_cre
     if (display.is_grid_inside())
         return Type::Grid;
 
-    if (display.is_math_inside())
+    if (display.is_math_inside()) {
+        // For MathMLFractionBox we use a dedicated MathFormattingContext that implements
+        // the layout described in MathML Core 3.3.2.
+        if (box.is_mathml_fraction_box())
+            return Type::Math;
         // FIXME: We should create a MathML-specific formatting context here, but for now use a BFC, so _something_ is displayed
         return Type::Block;
+    }
 
     if (creates_block_formatting_context(box))
         return Type::Block;
@@ -369,6 +375,8 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
         return make<BlockFormattingContext>(state, layout_mode, as<BlockContainer>(child_box), this);
     case Type::SVG:
         return make<SVGFormattingContext>(state, layout_mode, child_box, this);
+    case Type::Math:
+        return make<MathFormattingContext>(state, layout_mode, child_box, this);
     case Type::Flex:
         return make<FlexFormattingContext>(state, layout_mode, child_box, this);
     case Type::Grid:

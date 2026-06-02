@@ -49,6 +49,67 @@ enum FontWidth {
 
 constexpr float text_shaping_resolution = 64;
 
+// https://learn.microsoft.com/en-us/typography/opentype/spec/math#mathconstants-table
+// Values mirror hb_ot_math_constant_t.
+enum class OpenTypeMathConstant {
+    ScriptPercentScaleDown = 0,
+    ScriptScriptPercentScaleDown = 1,
+    DelimitedSubFormulaMinHeight = 2,
+    DisplayOperatorMinHeight = 3,
+    MathLeading = 4,
+    AxisHeight = 5,
+    AccentBaseHeight = 6,
+    FlattenedAccentBaseHeight = 7,
+    SubscriptShiftDown = 8,
+    SubscriptTopMax = 9,
+    SubscriptBaselineDropMin = 10,
+    SuperscriptShiftUp = 11,
+    SuperscriptShiftUpCramped = 12,
+    SuperscriptBottomMin = 13,
+    SuperscriptBaselineDropMax = 14,
+    SubSuperscriptGapMin = 15,
+    SuperscriptBottomMaxWithSubscript = 16,
+    SpaceAfterScript = 17,
+    UpperLimitGapMin = 18,
+    UpperLimitBaselineRiseMin = 19,
+    LowerLimitGapMin = 20,
+    LowerLimitBaselineDropMin = 21,
+    StackTopShiftUp = 22,
+    StackTopDisplayStyleShiftUp = 23,
+    StackBottomShiftDown = 24,
+    StackBottomDisplayStyleShiftDown = 25,
+    StackGapMin = 26,
+    StackDisplayStyleGapMin = 27,
+    StretchStackTopShiftUp = 28,
+    StretchStackBottomShiftDown = 29,
+    StretchStackGapAboveMin = 30,
+    StretchStackGapBelowMin = 31,
+    FractionNumeratorShiftUp = 32,
+    FractionNumeratorDisplayStyleShiftUp = 33,
+    FractionDenominatorShiftDown = 34,
+    FractionDenominatorDisplayStyleShiftDown = 35,
+    FractionNumeratorGapMin = 36,
+    FractionNumDisplayStyleGapMin = 37,
+    FractionRuleThickness = 38,
+    FractionDenominatorGapMin = 39,
+    FractionDenomDisplayStyleGapMin = 40,
+    SkewedFractionHorizontalGap = 41,
+    SkewedFractionVerticalGap = 42,
+    OverbarVerticalGap = 43,
+    OverbarRuleThickness = 44,
+    OverbarExtraAscender = 45,
+    UnderbarVerticalGap = 46,
+    UnderbarRuleThickness = 47,
+    UnderbarExtraDescender = 48,
+    RadicalVerticalGap = 49,
+    RadicalDisplayStyleVerticalGap = 50,
+    RadicalRuleThickness = 51,
+    RadicalExtraAscender = 52,
+    RadicalKernBeforeDegree = 53,
+    RadicalKernAfterDegree = 54,
+    RadicalDegreeBottomRaisePercent = 55,
+};
+
 class Font : public AtomicRefCounted<Font> {
 public:
     Font(NonnullRefPtr<Typeface const>, float point_width, float point_height, FontVariationSettings const variations, ShapeFeatures const& features);
@@ -89,6 +150,15 @@ public:
 
     bool is_emoji_font() const;
 
+    // Returns true if the font has an OpenType MATH table.
+    bool has_opentype_math_table() const;
+
+    // Returns the value of a MATH table constant in CSS pixels (already scaled to the
+    // font's current pixel size). Returns the fallback default if the font does not
+    // have a MATH table, or for the percent-valued constants returns the raw integer
+    // percentage.
+    float opentype_math_constant(OpenTypeMathConstant) const;
+
 private:
     u64 m_id { 0 };
 
@@ -98,6 +168,7 @@ private:
     mutable ShapingCache m_shaping_cache;
 
     mutable TriState m_is_emoji_font { TriState::Unknown };
+    mutable TriState m_has_opentype_math_table { TriState::Unknown };
 
     NonnullRefPtr<Typeface const> m_typeface;
     float m_point_width { 0.0f };

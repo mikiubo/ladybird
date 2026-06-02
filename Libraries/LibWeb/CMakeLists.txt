@@ -780,6 +780,8 @@ set(SOURCES
     Layout/LineBuilder.cpp
     Layout/ListItemBox.cpp
     Layout/ListItemMarkerBox.cpp
+    Layout/MathFormattingContext.cpp
+    Layout/MathMLFractionBox.cpp
     Layout/NavigableContainerViewport.cpp
     Layout/Node.cpp
     Layout/RadioButton.cpp
@@ -815,6 +817,7 @@ set(SOURCES
     Loader/ResourceLoader.cpp
     MathML/AttributeNames.cpp
     MathML/MathMLElement.cpp
+    MathML/MathMLMFracElement.cpp
     MathML/MathMLMiElement.cpp
     MathML/MathMLMspaceElement.cpp
     MathML/TagNames.cpp
@@ -873,6 +876,7 @@ set(SOURCES
     Painting/HitTestDisplayList.cpp
     Painting/ImagePaintable.cpp
     Painting/MarkerPaintable.cpp
+    Painting/MathMLFractionPaintable.cpp
     Painting/NavigableContainerViewportPaintable.cpp
     Painting/Paintable.cpp
     Painting/PaintableBox.cpp

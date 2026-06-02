@@ -974,6 +974,7 @@ struct LayoutState;
 namespace Web::MathML {
 
 class MathMLElement;
+class MathMLMFracElement;
 class MathMLMiElement;
 class MathMLMspaceElement;
 

@@ -11,6 +11,7 @@
 #include <AK/Utf16String.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Font/FontDatabase.h>
+#include <LibGfx/Font/OpenTypeMathDefaults.h>
 #include <LibGfx/Font/TypefaceSkia.h>
 #include <LibGfx/TextLayout.h>
 
@@ -185,6 +186,31 @@ bool Font::is_emoji_font() const
     }
 
     return m_is_emoji_font == TriState::True;
+}
+
+bool Font::has_opentype_math_table() const
+{
+    if (m_has_opentype_math_table == TriState::Unknown) {
+        auto* face = typeface().harfbuzz_typeface();
+        m_has_opentype_math_table = hb_ot_math_has_data(face) ? TriState::True : TriState::False;
+    }
+    return m_has_opentype_math_table == TriState::True;
+}
+
+float Font::opentype_math_constant(OpenTypeMathConstant constant) const
+{
+    if (!has_opentype_math_table())
+        return default_opentype_math_constant(constant, pixel_size());
+
+    auto* hb_font = harfbuzz_font();
+    auto value = hb_ot_math_get_constant(hb_font, static_cast<hb_ot_math_constant_t>(constant));
+
+    // Percent-valued constants are returned as raw integer percentages by HarfBuzz.
+    if (opentype_math_constant_is_percentage(constant))
+        return static_cast<float>(value);
+
+    // Length-valued constants are scaled by hb_font_set_scale (pixel_size * text_shaping_resolution).
+    return static_cast<float>(value) / text_shaping_resolution;
 }
 
 }
